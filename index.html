@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>급여 · 재정 목표 계산기</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{min-height:100vh;background:#0f1117;color:#e8eaed;
+  font-family:'Pretendard',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+.card{background:#1a1d27;border:1px solid #2a2d3a;border-radius:16px}
+input[type=range]{-webkit-appearance:none;width:100%;height:6px;border-radius:3px;outline:none;cursor:pointer}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:24px;height:24px;border-radius:50%;
+  background:#6c9fff;border:3px solid #0f1117;box-shadow:0 0 10px rgba(108,159,255,0.4);cursor:pointer}
+input[type=range]::-moz-range-thumb{width:24px;height:24px;border-radius:50%;
+  background:#6c9fff;border:3px solid #0f1117;box-shadow:0 0 10px rgba(108,159,255,0.4);cursor:pointer}
+input[type=number],input[type=text].ni{background:#12141c;border:1.5px solid #2a2d3a;border-radius:10px;
+  padding:10px 48px 10px 14px;font-size:15px;font-weight:500;color:#e8eaed;width:100%;
+  outline:none;font-family:inherit}
+input[type=number]:focus,input[type=text].ni:focus{border-color:#6c9fff;box-shadow:0 0 0 3px rgba(108,159,255,0.12)}
+input[type=number]::-webkit-inner-spin-button{opacity:0.3}
+.ti{background:#12141c;border:1px solid #2a2d3a;border-radius:8px;padding:10px 12px;font-size:14px;color:#e8eaed;width:100%;outline:none;font-family:inherit;box-sizing:border-box}
+.ti:focus{border-color:#6c9fff;box-shadow:0 0 0 3px rgba(108,159,255,0.12)}
+.btn-primary{background:linear-gradient(135deg,#6c9fff,#2563eb);border:none;border-radius:10px;color:#fff;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;padding:13px 0;width:100%}
+.btn-sm{border-radius:6px;padding:5px 12px;font-size:11px;cursor:pointer;font-family:inherit;border:1px solid}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script type="text/babel">
+const {useState,useMemo,useEffect}=React;
+const AUTH_OK_KEY="salary-planner-auth-ok-v1";
+const PASSWORD_STORAGE_KEY="salary-planner-password-v1";
+const DEFAULT_PASSWORD="weepingangelDW1!";
+
+function hashPassword(value){
+  let hash=5381;
+  for(let i=0;i<value.length;i++)hash=((hash<<5)+hash)+value.charCodeAt(i);
+  return String(hash>>>0);
+}
+
+function getSavedPasswordHash(){
+  try{return localStorage.getItem(PASSWORD_STORAGE_KEY)||hashPassword(DEFAULT_PASSWORD);}
+  catch{return hashPassword(DEFAULT_PASSWORD);}
+}
+
+function persistPassword(nextPassword){
+  const nextHash=hashPassword(nextPassword);
+  try{localStorage.setItem(PASSWORD_STORAGE_KEY,nextHash)}catch{}
+  return nextHash;
+}
+
+// ══════════ 2026 4대보험 요율 ══════════
+const NPS=0.0475,NPS_CAP=6370000,NPS_FL=390000;
+const HI_R=0.03595,LTC_R=0.1314,EI_R=0.009;
+const BRACKETS=[[14e6,0.06],[50e6,0.15],[88e6,0.24],[150e6,0.35],[300e6,0.38],[500e6,0.40],[1e9,0.42],[Infinity,0.45]];
+const BC=["#6c9fff","#818cf8","#a78bfa","#c084fc","#e879f9","#f472b6","#fb7185","#f87171"];
+const DC=["#6c9fff","#818cf8","#a78bfa","#c084fc","#fb923c","#fbbf24"];
+const C={accent:"#6c9fff",green:"#4ade80",red:"#f87171",gold:"#fbbf24",purple:"#a78bfa",teal:"#2dd4bf",orange:"#fb923c",pink:"#f472b6",muted:"#9ca3af",dim:"#6b7280",text:"#e8eaed",bg:"#0f1117",card:"#1a1d27",border:"#2a2d3a"};
+
+// ══════════ 급여 계산 (연봉 → 월 실수령) ══════════
+function eid(p){if(p<=5e6)return p*0.7;if(p<=15e6)return 35e5+(p-5e6)*0.4;if(p<=45e6)return 75e5+(p-15e6)*0.15;if(p<=1e8)return 12e6+(p-45e6)*0.05;return 1475e4+(p-1e8)*0.02;}
+function txCr(t){return t<=5e5?t*0.55:275e3+(t-5e5)*0.3}
+function txCrLim(p){if(p<=33e6)return 74e4;if(p<=70e6)return 74e4-(p-33e6)*0.008;return Math.max(5e5-(p-70e6)*0.5,2e5)}
+function calc(sal){
+  const m=sal/12,nb=Math.min(Math.max(m,NPS_FL),NPS_CAP);
+  const nps=Math.floor(nb*NPS/10)*10,hi=Math.floor(m*HI_R/10)*10;
+  const ltc=Math.floor(hi*LTC_R/10)*10,ei=Math.floor(m*EI_R/10)*10;
+  const tIns=nps+hi+ltc+ei,d=eid(sal),taxable=Math.max(sal-d-15e5,0);
+  let aT=0,det=[],prev=0;
+  for(const[lim,rate]of BRACKETS){if(taxable<=prev)break;const chunk=Math.min(taxable,lim)-prev;const t=chunk*rate;det.push({rate,tax:t});aT+=t;prev=lim;}
+  const cr=Math.min(txCr(aT),txCrLim(sal))+13e4,fT=Math.max(aT-cr,0);
+  const mI=Math.floor(fT/12/10)*10,mL=Math.floor(mI*0.1/10)*10,tD=tIns+mI+mL;
+  return{nps,hi,ltc,ei,tIns,mI,mL,tD,net:m-tD,aNet:(m-tD)*12,eff:sal>0?(tD*12/sal)*100:0,taxable,aT,cr,fT,det};
+}
+
+// 만원 단위 연봉 → 상세 공제 (성장 트래커용)
+function calcNet(salManWon,nonTax=200000){
+  const ann=salManWon*10000,m=ann/12,tm=Math.max(m-nonTax,0),ta=tm*12;
+  const npB=Math.min(Math.max(tm,NPS_FL),NPS_CAP);
+  const np=Math.floor(npB*NPS),hi=Math.floor(tm*HI_R),ltc=Math.floor(hi*LTC_R),ei=Math.floor(tm*EI_R);
+  const tIns=np+hi+ltc+ei,tInsA=tIns*12;
+  const eidV=eid(ta),earnInc=Math.max(ta-eidV,0),txBase=Math.max(earnInc-15e5-tInsA,0);
+  let inTax=0;const bk=[[14e6,0.06,0],[50e6,0.15,126e4],[88e6,0.24,576e4],[150e6,0.35,1544e4],[300e6,0.38,1994e4],[500e6,0.40,2594e4],[1e9,0.42,3594e4],[Infinity,0.45,6594e4]];
+  for(const[l,r,d]of bk){if(txBase<=l){inTax=txBase*r-d;break;}}
+  inTax=Math.max(inTax,0);
+  let cr2;if(inTax<=13e5)cr2=inTax*0.55;else cr2=715e3+(inTax-13e5)*0.3;
+  let crLim;if(ta<=33e6)crLim=74e4;else if(ta<=70e6)crLim=66e4;else crLim=5e5;
+  cr2=Math.min(cr2,crLim);
+  const fin=Math.max(inTax-cr2,0),loc=Math.floor(fin*0.1),mIT=Math.floor(fin/12),mLT=Math.floor(loc/12);
+  const tD=tIns+mIT+mLT;
+  return{gross:m,np,hi,ltc,ei,tIns,mIT,mLT,tD,net:Math.floor(m-tD),nonTax};
+}
+
+// ══════════ 재정목표 계산 ══════════
+function goalCalc(sav,inv,ret,goal,curCash,curInv){
+  if(goal<=0)return{mo:0,data:[]};const mr=ret/100/12;
+  let ps=(curCash||0),ip=(curInv||0),mo=0,tot=ps+ip;
+  if(tot>=goal)return{mo:0,data:[{m:0,t:tot,s:ps,i:ip}]};
+  if(sav+inv<=0&&ret<=0)return{mo:Infinity,data:[]};
+  const data=[{m:0,t:Math.round(tot),s:Math.round(ps),i:Math.round(ip)}];
+  while(tot<goal&&mo<1200){mo++;ps+=sav;ip+=inv;ip+=ip*mr;tot=ps+ip;
+    if(mo%(mo<=24?1:mo<=120?3:6)===0||tot>=goal)data.push({m:mo,t:Math.round(tot),s:Math.round(ps),i:Math.round(ip)});}
+  if(tot<goal)return{mo:Infinity,data};return{mo,data};
+}
+
+// ══════════ 역산 계산 ══════════
+function reverseCalc(goal,months,ret,curCash,curInv,invRatio){
+  if(months<=0||goal<=0)return{monthly:0,savPart:0,invPart:0,finalSav:0,finalInv:0};
+  const mr=ret/100/12;let eg=curInv||0;for(let i=0;i<months;i++)eg+=eg*mr;
+  const rem=goal-(curCash||0)-eg;
+  if(rem<=0)return{monthly:0,savPart:0,invPart:0,finalSav:(curCash||0),finalInv:eg};
+  const ratio=(invRatio||50)/100;let lo=0,hi=rem;
+  for(let it=0;it<100;it++){const mid=(lo+hi)/2,mS=mid*(1-ratio),mI2=mid*ratio;
+    let ps=(curCash||0),ip=(curInv||0);for(let m=0;m<months;m++){ps+=mS;ip+=mI2;ip+=ip*mr;}
+    if(ps+ip>=goal)hi=mid;else lo=mid;}
+  const monthly=Math.ceil((lo+hi)/2/1000)*1000,mSav=Math.round(monthly*(1-ratio)),mInv=monthly-mSav;
+  let fS=(curCash||0),fI=(curInv||0);for(let m=0;m<months;m++){fS+=mSav;fI+=mInv;fI+=fI*mr;}
+  return{monthly,savPart:mSav,invPart:mInv,finalSav:Math.round(fS),finalInv:Math.round(fI)};
+}
+
+// ══════════ 포맷 ══════════
+const f=n=>Math.round(n).toLocaleString("ko-KR");const fw=n=>f(n)+"원";
+function sl(v){if(v>=1e8)return(v/1e8).toFixed(v%1e8===0?0:1)+"억원";return(v/1e4).toLocaleString("ko-KR")+"만원";}
+function fk(n){if(Math.abs(n)>=1e8)return(n/1e8).toFixed(1).replace(/\.0$/,"")+"억";if(Math.abs(n)>=1e4)return(n/1e4).toFixed(0)+"만";return n.toLocaleString();}
+function fm(m){if(m===Infinity||isNaN(m)||m<=0)return null;const y=Math.floor(m/12),mo=Math.ceil(m%12);if(!y)return`${mo}개월`;if(!mo)return`${y}년`;return`${y}년 ${mo}개월`;}
+const fPct=n=>(n>=0?"+":"")+n.toFixed(1)+"%";
+
+// ══════════ 공용 컴포넌트 ══════════
+function GrowthChart({data,goal:g}){
+  if(!data||data.length<2)return null;
+  const W=520,H=170,PX=44,PY=20,PB=28,cW=W-PX*2,cH=H-PY-PB;
+  const mM=data[data.length-1].m||1,mV=Math.max(g,...data.map(d=>d.t))*1.05;
+  const x=m=>PX+(m/mM)*cW,y=v=>PY+cH-(v/mV)*cH;
+  const tp=data.map((d,i)=>`${i?"L":"M"}${x(d.m)},${y(d.t)}`).join(" ");
+  const sp2=data.map((d,i)=>`${i?"L":"M"}${x(d.m)},${y(d.s)}`).join(" ");
+  const ar=tp+` L${x(data[data.length-1].m)},${y(0)} L${x(0)},${y(0)} Z`;
+  const tk=Array.from({length:5},(_,i)=>Math.round((mV/4)*i));
+  return(<svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"auto"}}>
+    <defs><linearGradient id="ag" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#6c9fff" stopOpacity="0.18"/><stop offset="100%" stopColor="#6c9fff" stopOpacity="0.01"/></linearGradient></defs>
+    {tk.map(t=><g key={t}><line x1={PX} y1={y(t)} x2={W-PX} y2={y(t)} stroke="#2a2d3a" strokeWidth="1"/><text x={PX-6} y={y(t)+4} textAnchor="end" fontSize="8.5" fill="#6b7280" fontFamily="sans-serif">{fk(t)}</text></g>)}
+    <line x1={PX} y1={y(g)} x2={W-PX} y2={y(g)} stroke="#f87171" strokeWidth="1" strokeDasharray="5,4" opacity="0.6"/>
+    <text x={W-PX+4} y={y(g)+3} fontSize="8.5" fill="#f87171" fontWeight="600">목표</text>
+    <path d={ar} fill="url(#ag)"/><path d={sp2} fill="none" stroke="#4ade80" strokeWidth="1.5" strokeLinecap="round" opacity="0.6"/>
+    <path d={tp} fill="none" stroke="#6c9fff" strokeWidth="2.5" strokeLinecap="round"/>
+    <circle cx={x(data[data.length-1].m)} cy={y(data[data.length-1].t)} r="3.5" fill="#6c9fff"/>
+    <text x={W/2} y={H-3} textAnchor="middle" fontSize="9" fill="#6b7280">경과 기간 (개월)</text>
+    <g transform={`translate(${PX+6},${PY+8})`}><line x1="0" y1="0" x2="12" y2="0" stroke="#6c9fff" strokeWidth="2.5"/><text x="16" y="3" fontSize="8" fill="#9ca3af">총 자산</text>
+    <line x1="60" y1="0" x2="72" y2="0" stroke="#4ade80" strokeWidth="1.5"/><text x="76" y="3" fontSize="8" fill="#9ca3af">순 저축</text></g>
+  </svg>);
+}
+
+function Donut({items,center}){
+  const tot=items.reduce((s,x)=>s+x.a,0);if(tot<=0)return null;
+  const R=70,r2=44,cx=90,cy=90;let cum=0;
+  const arcs=items.map(x=>{const frac=x.a/tot;const sa=cum*2*Math.PI-Math.PI/2;cum+=frac;const ea=cum*2*Math.PI-Math.PI/2;const lg=frac>0.5?1:0;
+    const d=frac>=0.9999?`M${cx-R},${cy}A${R},${R},0,1,1,${cx+R},${cy}A${R},${R},0,1,1,${cx-R},${cy}Z M${cx-r2},${cy}A${r2},${r2},0,1,0,${cx+r2},${cy}A${r2},${r2},0,1,0,${cx-r2},${cy}Z`
+    :`M${cx+R*Math.cos(sa)},${cy+R*Math.sin(sa)}A${R},${R},0,${lg},1,${cx+R*Math.cos(ea)},${cy+R*Math.sin(ea)}L${cx+r2*Math.cos(ea)},${cy+r2*Math.sin(ea)}A${r2},${r2},0,${lg},0,${cx+r2*Math.cos(sa)},${cy+r2*Math.sin(sa)}Z`;
+    return{...x,d,frac};});
+  return(<div style={{display:"flex",alignItems:"center",gap:20}}>
+    <div style={{position:"relative",width:180,height:180,flexShrink:0}}>
+      <svg viewBox="0 0 180 180" style={{width:"100%",height:"100%"}}>{arcs.map((a,i)=><path key={i} d={a.d} fill={a.c} opacity="0.85" stroke="#1a1d27" strokeWidth="2"/>)}</svg>
+      <div style={{position:"absolute",top:"50%",left:"50%",transform:"translate(-50%,-50%)",textAlign:"center"}}>
+        <div style={{fontSize:10,color:"#6b7280",marginBottom:2}}>{center||"합계"}</div>
+        <div style={{fontSize:15,fontWeight:700,color:"#e8eaed"}}>{fk(tot)}원</div></div>
+    </div>
+    <div style={{display:"flex",flexDirection:"column",gap:10,flex:1}}>
+      {arcs.map((x,i)=>(<div key={i}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
+        <div style={{width:8,height:8,borderRadius:"50%",background:x.c,flexShrink:0}}/><span style={{fontSize:12,color:"#9ca3af"}}>{x.l}</span>
+        <span style={{fontSize:11,fontWeight:600,color:x.c,marginLeft:"auto"}}>{(x.frac*100).toFixed(1)}%</span></div>
+        <div style={{fontSize:13,fontWeight:600,color:"#e8eaed",paddingLeft:14}}>{fk(x.a)}원</div></div>))}
+    </div>
+  </div>);
+}
+
+function SalSlider({value,onChange,min,max,step}){
+  const steps=Math.round((max-min)/step),idx=Math.round((value-min)/step),pct=(idx/steps)*100;
+  return <input type="range" min={0} max={steps} step={1} value={idx}
+    style={{background:`linear-gradient(to right,#6c9fff ${pct}%,#2a2d3a ${pct}%)`}}
+    onChange={e=>onChange(min+Number(e.target.value)*step)}/>;
+}
+
+function NI({label,value,onChange,suffix,sub,step=100000,badge}){
+  return(<div style={{marginBottom:16}}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:5}}>
+      <div style={{display:"flex",alignItems:"center",gap:8}}>
+        <span style={{fontSize:13,fontWeight:500,color:C.muted}}>{label}</span>
+        {badge!=null&&<span style={{fontSize:11,fontWeight:600,color:badge>50?C.red:badge>30?C.orange:C.green,
+          background:badge>50?"rgba(248,113,113,0.1)":badge>30?"rgba(251,146,60,0.1)":"rgba(74,222,128,0.1)",
+          padding:"2px 7px",borderRadius:6}}>{badge}%</span>}
+      </div>
+      {sub&&<span style={{fontSize:11,color:C.dim}}>{sub}</span>}
+    </div>
+    <div style={{position:"relative"}}>
+      <input type="number" value={value} onChange={e=>onChange(Number(e.target.value)||0)} step={step} min={0}/>
+      <span style={{position:"absolute",right:14,top:"50%",transform:"translateY(-50%)",fontSize:13,color:C.dim,pointerEvents:"none"}}>{suffix}</span>
+    </div>
+  </div>);
+}
+
+// ══════════ 성장 트래커 라인 차트 ══════════
+function LineChart({records,dataKey,color,label,formatter,height=180,nonTaxVal}){
+  if(records.length<2)return null;
+  const values=records.map(r=>dataKey==="net"?calcNet(r.salary,nonTaxVal).net:r.salary);
+  const min=Math.min(...values)*0.92,max=Math.max(...values)*1.05,range=max-min||1;
+  const pad={top:30,right:20,bottom:36,left:16},w=100,h=100;
+  const points=values.map((v,i)=>({x:pad.left+(i/(values.length-1))*(w-pad.left-pad.right),y:pad.top+(1-(v-min)/range)*(h-pad.top-pad.bottom),value:v,year:records[i].year}));
+  const pathD=points.map((p,i)=>`${i===0?"M":"L"} ${p.x} ${p.y}`).join(" ");
+  const areaD=pathD+` L ${points[points.length-1].x} ${h-pad.bottom} L ${points[0].x} ${h-pad.bottom} Z`;
+  return(<div style={{marginBottom:8}}>
+    <div style={{fontSize:12,fontWeight:600,color:C.muted,marginBottom:8,display:"flex",alignItems:"center",gap:8}}>
+      <span style={{width:10,height:10,borderRadius:"50%",background:color,display:"inline-block"}}/>{label}</div>
+    <svg viewBox={`0 0 ${w} ${h}`} style={{width:"100%",height,overflow:"visible"}}>
+      <defs><linearGradient id={`grad-${dataKey}`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={color} stopOpacity="0.25"/><stop offset="100%" stopColor={color} stopOpacity="0.02"/></linearGradient></defs>
+      <path d={areaD} fill={`url(#grad-${dataKey})`}/><path d={pathD} fill="none" stroke={color} strokeWidth="0.8" strokeLinejoin="round"/>
+      {points.map((p,i)=>(<g key={i}><circle cx={p.x} cy={p.y} r="1.5" fill={C.bg} stroke={color} strokeWidth="0.7"/>
+        <text x={p.x} y={p.y-4} textAnchor="middle" fill={C.text} fontSize="3.5" fontWeight="600">{formatter(p.value)}</text>
+        <text x={p.x} y={h-pad.bottom+8} textAnchor="middle" fill={C.muted} fontSize="3.2">{String(p.year).slice(-2)}년</text></g>))}
+    </svg>
+  </div>);
+}
+
+// ══════════ 메인 앱 ══════════
+const SK="salary-planner-v1",TK="salary-records-v2";
+function ldP(){try{return JSON.parse(localStorage.getItem(SK))||{}}catch{return{}}}
+function ldR(){try{return JSON.parse(localStorage.getItem(TK))||[]}catch{return[]}}
+
+function App({onLock,onPasswordChanged}){
+  const saved=useMemo(ldP,[]);
+  const[sal,setSal]=useState(saved.sal??50000000);
+  const[tab,setTab]=useState("net");
+  const[sav,setSav]=useState(saved.sav??500000);
+  const[inv,setInv]=useState(saved.inv??300000);
+  const[ret,setRet]=useState(saved.ret??7);
+  const[goal,setGoal]=useState(saved.goal??100000000);
+  const[curCash,setCurCash]=useState(saved.curCash??5000000);
+  const[curInv,setCurInv]=useState(saved.curInv??5000000);
+  const[rGoal,setRGoal]=useState(saved.rGoal??100000000);
+  const[rYears,setRYears]=useState(saved.rYears??5);
+  const[rRet,setRRet]=useState(saved.rRet??7);
+  const[rCash,setRCash]=useState(saved.rCash??5000000);
+  const[rInv2,setRInv2]=useState(saved.rInv??5000000);
+  const[rRatio,setRRatio]=useState(saved.rRatio??50);
+
+  // 성장 트래커 state
+  const[records,setRecords]=useState(ldR);
+  const[tYear,setTYear]=useState("");
+  const[tSal,setTSal]=useState("");
+  const[tMemo,setTMemo]=useState("");
+  const[tNonTax,setTNonTax]=useState("20");
+  const[editIdx,setEditIdx]=useState(null);
+  const[showForm,setShowForm]=useState(false);
+  const[expandIdx,setExpandIdx]=useState(null);
+
+  const r=useMemo(()=>calc(sal),[sal]);
+  const gr=useMemo(()=>goalCalc(sav,inv,ret,goal,curCash,curInv),[sav,inv,ret,goal,curCash,curInv]);
+  const fmtd=fm(gr.mo);
+  const sp=r.net>0?Math.round(((sav+inv)/r.net)*100):0;
+  const totalCur=curCash+curInv;
+  const rv=useMemo(()=>reverseCalc(rGoal,rYears*12,rRet,rCash,rInv2,rRatio),[rGoal,rYears,rRet,rCash,rInv2,rRatio]);
+  const rvPct=r.net>0?Math.round(rv.monthly/r.net*100):0;
+
+  useEffect(()=>{try{localStorage.setItem(SK,JSON.stringify({sal,sav,inv,ret,goal,curCash,curInv,rGoal,rYears,rRet,rCash,rInv:rInv2,rRatio}))}catch{}},[sal,sav,inv,ret,goal,curCash,curInv,rGoal,rYears,rRet,rCash,rInv2,rRatio]);
+
+  const saveRec=d=>{setRecords(d);try{localStorage.setItem(TK,JSON.stringify(d))}catch{}};
+  const nonTaxVal=parseInt(tNonTax||"0")*10000;
+
+  const handleTSalInput=val=>{const num=val.replace(/[^0-9]/g,"");setTSal(num?parseInt(num).toLocaleString("ko-KR"):"")};
+  const handleSubmitRec=()=>{const y=parseInt(tYear),s=parseInt((tSal||"").replace(/,/g,""));if(!y||!s||s<=0)return;
+    let next;if(editIdx!==null){next=records.map((r2,i)=>i===editIdx?{year:y,salary:s,memo:tMemo}:r2);setEditIdx(null)}else{next=[...records,{year:y,salary:s,memo:tMemo}]}
+    next.sort((a,b)=>a.year-b.year);saveRec(next);setTYear("");setTSal("");setTMemo("");setShowForm(false)};
+  const handleEditRec=i=>{setTYear(String(records[i].year));setTSal(f(records[i].salary));setTMemo(records[i].memo||"");setEditIdx(i);setShowForm(true)};
+  const handleDeleteRec=i=>{saveRec(records.filter((_,j)=>j!==i));if(expandIdx===i)setExpandIdx(null)};
+  const cancelEdit=()=>{setEditIdx(null);setTYear("");setTSal("");setTMemo("");setShowForm(false)};
+
+  const tStats=records.length>=2?(()=>{const fi=records[0],la=records[records.length-1];const fN=calcNet(fi.salary,nonTaxVal).net,lN=calcNet(la.salary,nonTaxVal).net;
+    return{tg:((la.salary-fi.salary)/fi.salary)*100,ng:((lN-fN)/fN)*100,ag:(Math.pow(la.salary/fi.salary,1/(records.length-1))-1)*100,
+      yrs:la.year-fi.year,ti:la.salary-fi.salary,ni:lN-fN}})():null;
+
+  const deds=[{l:"국민연금",v:r.nps},{l:"건강보험",v:r.hi},{l:"장기요양",v:r.ltc},{l:"고용보험",v:r.ei},{l:"소득세",v:r.mI},{l:"지방소득세",v:r.mL}];
+  const mx=Math.max(...deds.map(d=>d.v),1);
+  const tabs=[{id:"net",l:"실수령",c:C.green},{id:"insurance",l:"4대보험",c:C.accent},{id:"tax",l:"세금",c:C.orange},{id:"goal",l:"목표 기간",c:C.purple},{id:"reverse",l:"필요 금액",c:C.pink},{id:"tracker",l:"성장 기록",c:C.teal}];
+
+  return(
+  <div style={{maxWidth:640,margin:"0 auto",padding:"32px 20px 64px"}}>
+    <div className="card" style={{padding:"14px 16px",marginBottom:18,display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap",
+      background:"linear-gradient(135deg,rgba(108,159,255,0.08),rgba(45,212,191,0.08))",border:`1px solid ${C.accent}33`}}>
+      <div>
+        <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:4}}>비밀번호 보호가 활성화되어 있습니다</div>
+        <div style={{fontSize:12,color:C.muted,lineHeight:1.5}}>이 브라우저에서는 변경한 비밀번호가 로컬 저장소에 유지됩니다.</div>
+      </div>
+      <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+        <button className="btn-sm" onClick={onPasswordChanged} style={{background:C.accent+"18",borderColor:C.accent+"33",color:C.accent,padding:"8px 12px",fontSize:12}}>비밀번호 변경</button>
+        <button className="btn-sm" onClick={onLock} style={{background:C.red+"18",borderColor:C.red+"33",color:C.red,padding:"8px 12px",fontSize:12}}>잠금</button>
+      </div>
+    </div>
+    <div style={{textAlign:"center",marginBottom:32}}>
+      <h1 style={{fontSize:24,fontWeight:700,letterSpacing:"-0.02em"}}>급여 · 재정 목표 계산기</h1>
+      <p style={{color:C.muted,fontSize:13,marginTop:7}}>2026년 기준 · 실수령액 산출부터 목표 달성까지</p>
+    </div>
+
+    {/* 연봉 슬라이더 */}
+    {tab!=="tracker"&&(<div className="card" style={{padding:"24px 22px",marginBottom:18}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:14}}>
+        <span style={{fontSize:14,color:C.muted,fontWeight:500}}>연봉</span>
+        <span style={{fontSize:26,fontWeight:700,color:C.accent,letterSpacing:"-0.02em"}}>{sl(sal)}</span></div>
+      <SalSlider value={sal} onChange={setSal} min={20000000} max={150000000} step={500000}/>
+      <div style={{display:"flex",justifyContent:"space-between",marginTop:8,fontSize:12,color:C.dim}}><span>2,000만</span><span>1억 5,000만</span></div>
+    </div>)}
+
+    {/* 탭 - 2줄로 배치 */}
+    <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6,marginBottom:18}}>
+      {tabs.map(t=>{const a=tab===t.id;return <button key={t.id} onClick={()=>setTab(t.id)} style={{
+        padding:"9px 0",borderRadius:10,fontSize:13,fontWeight:600,cursor:"pointer",fontFamily:"inherit",transition:"all 0.2s",
+        border:a?`1.5px solid ${t.c}`:`1px solid ${C.border}`,background:a?t.c+"16":"transparent",color:a?t.c:C.muted
+      }}>{t.l}</button>;})}
+    </div>
+
+    {/* 요약 카드 (트래커 제외) */}
+    {tab!=="tracker"&&(<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:18}}>
+      <div className="card" style={{gridColumn:"1/-1",padding:"18px 16px"}}>
+        <div style={{fontSize:12,color:C.muted,marginBottom:5}}>월 실수령액</div>
+        <div style={{fontSize:30,fontWeight:700,color:C.green,letterSpacing:"-0.02em"}}>{fw(r.net)}</div></div>
+      {[{l:"연 실수령액",v:fw(r.aNet),c:C.green},{l:"월 공제 합계",v:fw(r.tD),c:C.red},{l:"실효 세율",v:r.eff.toFixed(1)+"%",c:C.orange},{l:"저축+투자율",v:sp+"%",c:C.accent}].map((c2,i)=>(
+        <div key={i} className="card" style={{padding:"16px 14px"}}>
+          <div style={{fontSize:12,color:C.muted,marginBottom:4}}>{c2.l}</div>
+          <div style={{fontSize:19,fontWeight:700,color:c2.c,letterSpacing:"-0.02em"}}>{c2.v}</div></div>))}
+    </div>)}
+
+    {/* 공제 내역 */}
+    {(tab==="net"||tab==="insurance")&&(<div className="card" style={{padding:22,marginBottom:18}}>
+      <h3 style={{fontSize:14,fontWeight:600,color:C.muted,marginBottom:16}}>월 공제 항목</h3>
+      <div style={{display:"flex",height:10,borderRadius:5,overflow:"hidden",marginBottom:18}}>
+        {deds.map((d,i)=><div key={i} style={{width:`${(d.v/(r.tD||1))*100}%`,background:DC[i],transition:"width 0.3s",minWidth:d.v>0?2:0}}/>)}</div>
+      {deds.map((d,i)=>(<div key={i} style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+        <div style={{width:9,height:9,borderRadius:3,background:DC[i],flexShrink:0}}/>
+        <span style={{fontSize:13,color:C.muted,flex:1}}>{d.l}</span>
+        <div style={{flex:2,height:5,borderRadius:3,background:DC[i]+"18",position:"relative"}}>
+          <div style={{position:"absolute",left:0,top:0,height:"100%",borderRadius:3,background:DC[i],width:`${(d.v/mx)*100}%`,transition:"width 0.3s"}}/></div>
+        <span style={{fontSize:13,fontWeight:600,minWidth:86,textAlign:"right"}}>{fw(d.v)}</span></div>))}
+      <div style={{display:"flex",justifyContent:"space-between",marginTop:14,paddingTop:12,borderTop:`1px solid ${C.border}`}}>
+        <span style={{fontSize:13,color:C.muted}}>공제 합계</span><span style={{fontSize:17,fontWeight:700,color:C.red}}>{fw(r.tD)}</span></div>
+    </div>)}
+
+    {/* 소득세 구간 */}
+    {(tab==="net"||tab==="tax")&&(<div className="card" style={{padding:22,marginBottom:18}}>
+      <h3 style={{fontSize:14,fontWeight:600,color:C.muted,marginBottom:4}}>소득세 구간</h3>
+      <p style={{fontSize:12,color:C.dim,marginBottom:16}}>과세표준: {fw(r.taxable)}</p>
+      {(()=>{let prev=0;return BRACKETS.map(([lim,rate],i)=>{
+        const det=r.det.find(d=>d.rate===rate);const a=!!det;const lo=prev;
+        const rl=lim===Infinity?sl(lo)+" 초과":sl(lo)+" ~ "+sl(lim);prev=lim;
+        return(<div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"9px 12px",borderRadius:10,marginBottom:6,opacity:a?1:0.3,
+          background:a?BC[i]+"12":"transparent",border:`1px solid ${a?BC[i]+"30":"transparent"}`}}>
+          <span style={{fontSize:13,fontWeight:700,minWidth:36,color:BC[i]}}>{(rate*100).toFixed(0)}%</span>
+          <span style={{fontSize:13,color:C.muted,flex:1}}>{rl}</span>
+          <span style={{fontSize:13,fontWeight:600,minWidth:78,textAlign:"right",color:a?C.text:C.dim}}>{a?fw(det.tax):"-"}</span></div>);});})()}
+      <div style={{marginTop:14,paddingTop:12,borderTop:`1px solid ${C.border}`,display:"flex",flexDirection:"column",gap:7}}>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:13,color:C.muted}}><span>산출세액 (연)</span><span>{fw(r.aT)}</span></div>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:13,color:C.green}}><span>세액공제</span><span>-{fw(r.cr)}</span></div>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:14,fontWeight:700}}><span>결정세액 (연)</span><span style={{color:C.orange}}>{fw(r.fT)}</span></div></div>
+    </div>)}
+
+    {/* 목표 기간 탭 */}
+    {tab==="goal"&&(<>
+      <div className="card" style={{padding:22,marginBottom:18}}>
+        <h3 style={{fontSize:14,fontWeight:600,color:C.muted,marginBottom:16}}>저축 · 투자 설정</h3>
+        <NI label="월 저축액" value={sav} onChange={setSav} suffix="원" sub="예금, 적금 등" badge={r.net>0?Math.round(sav/r.net*100):null}/>
+        <NI label="월 투자액" value={inv} onChange={setInv} suffix="원" sub="주식, 펀드 등" badge={r.net>0?Math.round(inv/r.net*100):null}/>
+        <NI label="연간 예상 수익률" value={ret} onChange={setRet} suffix="%" sub="투자 부분에만 적용" step={0.5}/>
+        <div style={{height:1,background:C.border,margin:"4px 0 16px"}}/>
+        <div style={{fontSize:13,fontWeight:600,color:C.muted,marginBottom:12}}>현재 보유 자산</div>
+        <NI label="현금성 자산" value={curCash} onChange={setCurCash} suffix="원" sub="예금, 적금 등" step={1000000}/>
+        <NI label="투자 자산" value={curInv} onChange={setCurInv} suffix="원" sub="수익률 적용됨" step={1000000}/>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 14px",background:"#12141c",borderRadius:10,marginBottom:16}}>
+          <span style={{fontSize:12,color:C.dim}}>보유 자산 합계</span><span style={{fontSize:15,fontWeight:700,color:C.text}}>{fw(totalCur)}</span></div>
+        <NI label="목표 금액" value={goal} onChange={setGoal} suffix="원" step={10000000}/>
+        {sav+inv>r.net&&r.net>0&&(<div style={{padding:"10px 14px",background:"rgba(248,113,113,0.08)",border:`1px solid rgba(248,113,113,0.2)`,borderRadius:10,fontSize:12,color:C.red,lineHeight:1.5}}>
+          저축+투자 합계({(sav+inv).toLocaleString()}원)가 실수령액({f(r.net)}원)을 초과합니다.</div>)}
+      </div>
+      <div className="card" style={{padding:"24px 22px",marginBottom:18,textAlign:"center",
+        background:fmtd?"linear-gradient(135deg,rgba(108,159,255,0.12),rgba(168,85,247,0.10))":"rgba(248,113,113,0.08)",
+        border:fmtd?`1px solid rgba(108,159,255,0.25)`:`1px solid rgba(248,113,113,0.2)`}}>
+        {fmtd?(<><div style={{fontSize:12,color:C.muted,marginBottom:6}}>목표 달성까지</div>
+          <div style={{fontSize:38,fontWeight:700,color:C.accent,letterSpacing:"-0.02em",lineHeight:1.1,marginBottom:10}}>{fmtd}</div>
+          <div style={{display:"inline-flex",gap:14,fontSize:11,color:C.muted,background:"rgba(255,255,255,0.04)",borderRadius:8,padding:"6px 14px"}}>
+            <span>저축률 <b style={{color:C.green}}>{sp}%</b></span><span>잔여 <b style={{color:C.accent}}>{fk(goal-totalCur)}원</b></span></div></>
+        ):(<><div style={{fontSize:14,fontWeight:600,color:C.red,marginBottom:4}}>현재 조건으로는 목표 달성이 어렵습니다</div><div style={{fontSize:12,color:C.dim}}>저축액이나 투자 비중을 조정해보세요</div></>)}</div>
+      {gr.data.length>1&&(<div className="card" style={{padding:"16px 12px 8px",marginBottom:18}}>
+        <div style={{fontSize:13,fontWeight:600,color:C.muted,marginBottom:8,paddingLeft:8}}>자산 성장 추이</div><GrowthChart data={gr.data} goal={goal}/></div>)}
+      {fmtd&&gr.mo>0&&(<div className="card" style={{padding:22,marginBottom:18}}>
+        <div style={{fontSize:13,fontWeight:600,color:C.muted,marginBottom:14}}>달성 시점 자산 구성</div>
+        <Donut items={[{l:"저축",a:(curCash||0)+((gr.data[gr.data.length-1]?.s||0)-(curCash||0)),c:C.green},{l:"투자",a:gr.data[gr.data.length-1]?.i||0,c:C.purple}].filter(x=>x.a>0)}/></div>)}
+    </>)}
+
+    {/* 필요 금액 탭 */}
+    {tab==="reverse"&&(<>
+      <div className="card" style={{padding:22,marginBottom:18}}>
+        <h3 style={{fontSize:14,fontWeight:600,color:C.muted,marginBottom:16}}>목표 설정</h3>
+        <NI label="목표 금액" value={rGoal} onChange={setRGoal} suffix="원" step={10000000}/>
+        <div style={{marginBottom:16}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:5}}>
+          <span style={{fontSize:13,fontWeight:500,color:C.muted}}>목표 기간</span><span style={{fontSize:11,color:C.dim}}>{rYears}년 ({rYears*12}개월)</span></div>
+          <SalSlider value={rYears} onChange={setRYears} min={1} max={30} step={1}/>
+          <div style={{display:"flex",justifyContent:"space-between",marginTop:6,fontSize:11,color:C.dim}}><span>1년</span><span>30년</span></div></div>
+        <NI label="연간 예상 수익률" value={rRet} onChange={setRRet} suffix="%" sub="투자 부분에만 적용" step={0.5}/>
+        <div style={{height:1,background:C.border,margin:"4px 0 16px"}}/>
+        <div style={{fontSize:13,fontWeight:600,color:C.muted,marginBottom:12}}>현재 보유 자산</div>
+        <NI label="현금성 자산" value={rCash} onChange={setRCash} suffix="원" step={1000000}/>
+        <NI label="투자 자산" value={rInv2} onChange={setRInv2} suffix="원" sub="수익률 적용됨" step={1000000}/>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 14px",background:"#12141c",borderRadius:10,marginBottom:16}}>
+          <span style={{fontSize:12,color:C.dim}}>보유 자산 합계</span><span style={{fontSize:15,fontWeight:700,color:C.text}}>{fw(rCash+rInv2)}</span></div>
+        <div style={{height:1,background:C.border,margin:"4px 0 16px"}}/>
+        <div style={{marginBottom:16}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:5}}>
+          <span style={{fontSize:13,fontWeight:500,color:C.muted}}>투자 비중</span><span style={{fontSize:13,fontWeight:600,color:C.purple}}>{rRatio}%</span></div>
+          <SalSlider value={rRatio} onChange={setRRatio} min={0} max={100} step={5}/>
+          <div style={{display:"flex",justifyContent:"space-between",marginTop:6,fontSize:11,color:C.dim}}><span>전액 저축</span><span>전액 투자</span></div></div>
+      </div>
+      <div className="card" style={{padding:"24px 22px",marginBottom:18,textAlign:"center",
+        background:rv.monthly>0?"linear-gradient(135deg,rgba(244,114,182,0.12),rgba(168,85,247,0.10))":"rgba(74,222,128,0.1)",
+        border:rv.monthly>0?`1px solid rgba(244,114,182,0.25)`:`1px solid rgba(74,222,128,0.25)`}}>
+        {rv.monthly>0?(<><div style={{fontSize:12,color:C.muted,marginBottom:6}}>매월 필요한 금액</div>
+          <div style={{fontSize:38,fontWeight:700,color:C.pink,letterSpacing:"-0.02em",lineHeight:1.1,marginBottom:12}}>{f(rv.monthly)}원</div>
+          <div style={{display:"flex",gap:8,justifyContent:"center",flexWrap:"wrap"}}>
+            {[{l:"저축",v:f(rv.savPart)+"원",c:C.green},{l:"투자",v:f(rv.invPart)+"원",c:C.purple},{l:"실수령 대비",v:rvPct+"%",c:rvPct>80?C.red:rvPct>50?C.orange:C.green}].map((x,i)=>(
+              <div key={i} style={{background:"rgba(255,255,255,0.04)",borderRadius:8,padding:"8px 14px",fontSize:12}}><span style={{color:C.dim}}>{x.l} </span><span style={{fontWeight:700,color:x.c}}>{x.v}</span></div>))}
+          </div>
+          {rvPct>100&&(<div style={{marginTop:12,padding:"8px 14px",background:"rgba(248,113,113,0.08)",border:`1px solid rgba(248,113,113,0.2)`,borderRadius:8,fontSize:12,color:C.red}}>
+            실수령액({f(r.net)}원)을 초과합니다. 기간을 늘리거나 목표를 조정해보세요.</div>)}</>
+        ):(<div><div style={{fontSize:14,fontWeight:600,color:C.green,marginBottom:4}}>이미 보유 자산만으로 달성 가능합니다</div>
+          <div style={{fontSize:12,color:C.dim}}>기존 투자금 수익만으로 {rYears}년 내 목표를 초과합니다</div></div>)}</div>
+      {rv.monthly>0&&(<div className="card" style={{padding:22,marginBottom:18}}>
+        <div style={{fontSize:13,fontWeight:600,color:C.muted,marginBottom:14}}>{rYears}년 후 자산 구성 (예상)</div>
+        <Donut items={[{l:"저축",a:rv.finalSav,c:C.green},{l:"투자",a:rv.finalInv,c:C.purple}].filter(x=>x.a>0)}/></div>)}
+    </>)}
+
+    {/* ══════════ 성장 기록 탭 ══════════ */}
+    {tab==="tracker"&&(<>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16,fontSize:12,color:C.muted}}>
+        <span>월 비과세액</span>
+        <input type="text" className="ti" value={tNonTax} onChange={e=>setTNonTax(e.target.value.replace(/[^0-9]/g,""))}
+          style={{width:60,padding:"5px 8px",fontSize:12,textAlign:"right"}}/>
+        <span>만원</span><span style={{fontSize:11,opacity:0.7}}>(식대·교통비 등)</span>
+      </div>
+
+      {tStats&&(<>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:12}}>
+          {[{l:"세전 상승률",v:fPct(tStats.tg),s:`${tStats.yrs}년간`,c:tStats.tg>=0?C.green:C.red},
+            {l:"실수령 상승률",v:fPct(tStats.ng),s:"세후 기준",c:C.teal},
+            {l:"연평균 상승률",v:fPct(tStats.ag),s:"복리 기준",c:C.accent}].map((s2,i)=>(
+            <div key={i} className="card" style={{padding:"14px 10px",textAlign:"center"}}>
+              <div style={{fontSize:10,color:C.muted,marginBottom:6}}>{s2.l}</div>
+              <div style={{fontSize:18,fontWeight:700,color:s2.c}}>{s2.v}</div>
+              <div style={{fontSize:10,color:C.muted,marginTop:3}}>{s2.s}</div></div>))}
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16}}>
+          <div className="card" style={{padding:12,textAlign:"center"}}>
+            <div style={{fontSize:10,color:C.muted,marginBottom:4}}>세전 연봉 증가</div>
+            <div style={{fontSize:16,fontWeight:700,color:C.gold}}>{tStats.ti>=0?"+":""}{f(tStats.ti)}만원</div></div>
+          <div className="card" style={{padding:12,textAlign:"center"}}>
+            <div style={{fontSize:10,color:C.muted,marginBottom:4}}>월 실수령 증가</div>
+            <div style={{fontSize:16,fontWeight:700,color:C.teal}}>{tStats.ni>=0?"+":""}{f(tStats.ni)}원</div></div>
+        </div>
+      </>)}
+
+      {records.length>=2&&(<div className="card" style={{padding:"16px 12px",marginBottom:16}}>
+        <LineChart records={records} dataKey="salary" color={C.accent} label="세전 연봉 (만원)" nonTaxVal={nonTaxVal}
+          formatter={v=>v>=10000?(v/10000).toFixed(1)+"억":f(v)}/>
+        <div style={{height:12}}/>
+        <LineChart records={records} dataKey="net" color={C.teal} label="월 실수령액 (원)" nonTaxVal={nonTaxVal}
+          formatter={v=>f(v/10000)+"만"} height={160}/>
+      </div>)}
+
+      {records.length>0&&(<div style={{marginBottom:16}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+          <div style={{fontSize:13,fontWeight:600,color:C.muted}}>연봉 기록 ({records.length}건)</div>
+          <button onClick={()=>{if(confirm("모든 데이터를 삭제하시겠습니까?"))saveRec([])}} style={{background:"none",border:"none",color:C.red,fontSize:11,cursor:"pointer",opacity:0.7}}>전체 삭제</button>
+        </div>
+        {records.map((rc,i)=>{
+          const pct=i>0?((rc.salary-records[0].salary)/records[0].salary)*100:null;
+          const prevPct=i>0?((rc.salary-records[i-1].salary)/records[i-1].salary)*100:null;
+          const dt=calcNet(rc.salary,nonTaxVal);const isExp=expandIdx===i;
+          return(<div key={i} style={{marginBottom:8}}>
+            <div style={{background:C.card,border:`1px solid ${isExp?C.accent+"55":C.border}`,borderRadius:isExp?"10px 10px 0 0":"10px",padding:"12px 14px",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}}
+              onClick={()=>setExpandIdx(isExp?null:i)}>
+              <div style={{display:"flex",alignItems:"center",gap:12}}>
+                <div style={{width:36,height:36,borderRadius:8,background:i===0?C.gold+"15":C.accent+"15",border:`1px solid ${i===0?C.gold+"30":C.accent+"30"}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:i===0?C.gold:C.accent}}>
+                  {String(rc.year).slice(-2)}</div>
+                <div><div style={{fontSize:14,fontWeight:600,display:"flex",alignItems:"center",gap:6}}>
+                  {f(rc.salary)}<span style={{fontSize:11,color:C.muted,fontWeight:400}}>만원</span>
+                  {i===0&&<span style={{fontSize:9,color:C.gold,fontWeight:600,background:C.gold+"18",padding:"1px 6px",borderRadius:4}}>초봉</span>}</div>
+                  <div style={{fontSize:11,color:C.muted,marginTop:2,display:"flex",gap:8,flexWrap:"wrap"}}>
+                    <span style={{color:C.teal}}>실수령 {f(dt.net)}원</span>
+                    {pct!==null&&<span style={{color:pct>=0?C.green:C.red}}>초봉 대비 {fPct(pct)}</span>}</div></div>
+              </div>
+              <span style={{fontSize:14,color:C.muted,transform:isExp?"rotate(180deg)":"rotate(0)",transition:"transform 0.2s"}}>▾</span>
+            </div>
+            {isExp&&(<div style={{background:C.card,border:`1px solid ${C.accent}55`,borderTop:"none",borderRadius:"0 0 10px 10px",padding:"14px 16px"}}>
+              <div style={{fontSize:11,fontWeight:600,color:C.accent,marginBottom:10}}>2026년 세금 기준 공제 내역</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px 16px",fontSize:12}}>
+                {[{l:"세전 월급",v:f(dt.gross)+"원",c:C.text},{l:"비과세액",v:f(dt.nonTax)+"원",c:C.muted},
+                  {l:"국민연금",v:`-${f(dt.np)}원`,c:C.orange},{l:"건강보험",v:`-${f(dt.hi)}원`,c:C.orange},
+                  {l:"장기요양보험",v:`-${f(dt.ltc)}원`,c:C.orange},{l:"고용보험",v:`-${f(dt.ei)}원`,c:C.orange},
+                  {l:"소득세",v:`-${f(dt.mIT)}원`,c:C.purple},{l:"지방소득세",v:`-${f(dt.mLT)}원`,c:C.purple}].map((it,j)=>(
+                  <div key={j} style={{display:"flex",justifyContent:"space-between",padding:"4px 0",borderBottom:`1px solid ${C.border}44`}}>
+                    <span style={{color:C.muted}}>{it.l}</span><span style={{color:it.c,fontWeight:500}}>{it.v}</span></div>))}
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",marginTop:10,padding:"8px 0 4px",borderTop:`1px solid ${C.border}`}}>
+                <span style={{fontSize:12,fontWeight:600}}>총 공제액</span><span style={{fontSize:13,fontWeight:700,color:C.red}}>-{f(dt.tD)}원</span></div>
+              <div style={{display:"flex",justifyContent:"space-between",padding:"4px 0"}}>
+                <span style={{fontSize:13,fontWeight:700,color:C.teal}}>월 실수령액</span><span style={{fontSize:15,fontWeight:700,color:C.teal}}>{f(dt.net)}원</span></div>
+              {prevPct!==null&&<div style={{fontSize:11,color:C.muted,marginTop:4,textAlign:"right"}}>전년 대비 연봉 {fPct(prevPct)}</div>}
+              {rc.memo&&<div style={{fontSize:11,color:C.muted,marginTop:6}}>📝 {rc.memo}</div>}
+              <div style={{display:"flex",gap:6,marginTop:12,justifyContent:"flex-end"}}>
+                <button className="btn-sm" onClick={e=>{e.stopPropagation();handleEditRec(i)}} style={{background:C.accent+"18",borderColor:C.accent+"33",color:C.accent}}>수정</button>
+                <button className="btn-sm" onClick={e=>{e.stopPropagation();handleDeleteRec(i)}} style={{background:C.red+"18",borderColor:C.red+"33",color:C.red}}>삭제</button>
+              </div>
+            </div>)}
+          </div>);
+        })}
+      </div>)}
+
+      {records.length===0&&!showForm&&(<div style={{textAlign:"center",padding:"40px 20px",color:C.muted}}>
+        <div style={{fontSize:36,marginBottom:10}}>📊</div>
+        <div style={{fontSize:14,fontWeight:500,color:C.text,marginBottom:4}}>아직 기록이 없습니다</div>
+        <div style={{fontSize:12}}>아래 버튼을 눌러 첫 연봉을 입력해보세요</div></div>)}
+
+      {showForm&&(<div className="card" style={{border:`1px solid ${C.accent}44`,padding:18,marginBottom:14}}>
+        <div style={{fontSize:13,fontWeight:600,marginBottom:14}}>{editIdx!==null?"연봉 수정":records.length===0?"초봉 입력":"연봉 추가"}</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+          <div><label style={{fontSize:10,color:C.muted,display:"block",marginBottom:3}}>연도</label>
+            <input type="number" className="ti" placeholder="예: 2020" value={tYear} onChange={e=>setTYear(e.target.value)}/></div>
+          <div><label style={{fontSize:10,color:C.muted,display:"block",marginBottom:3}}>연봉 (만원)</label>
+            <input type="text" className="ti" placeholder="예: 3,000" value={tSal} onChange={e=>handleTSalInput(e.target.value)}/></div>
+        </div>
+        <div style={{marginBottom:12}}><label style={{fontSize:10,color:C.muted,display:"block",marginBottom:3}}>메모 (선택)</label>
+          <input type="text" className="ti" placeholder="예: 승진, 이직 등" value={tMemo} onChange={e=>setTMemo(e.target.value)}/></div>
+        <div style={{display:"flex",gap:8}}>
+          <button className="btn-primary" onClick={handleSubmitRec}>{editIdx!==null?"수정 완료":"저장"}</button>
+          <button onClick={cancelEdit} style={{padding:"10px 18px",background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,color:C.muted,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>취소</button>
+        </div>
+      </div>)}
+
+      {!showForm&&(<button className="btn-primary" onClick={()=>setShowForm(true)}>
+        + {records.length===0?"초봉 입력하기":"연봉 추가하기"}</button>)}
+    </>)}
+
+    {/* 안내문 */}
+    <div style={{fontSize:11.5,color:C.dim,lineHeight:1.7,padding:"16px 4px 0"}}>
+      ※ 2026년 4대보험 요율 기준 (국민연금 9.5%, 건강보험 7.19%, 장기요양 13.14%)<br/>
+      ※ 소득세는 근로소득공제·기본공제(150만)·세액공제·표준세액공제(13만) 적용 추정치입니다.<br/>
+      ※ 투자 수익은 복리 계산이며, 세금·인플레이션은 미반영된 시뮬레이션입니다.
+    </div>
+  </div>);
+}
+
+function PasswordGate(){
+  const [unlocked,setUnlocked]=useState(false);
+  const [passwordInput,setPasswordInput]=useState("");
+  const [loginError,setLoginError]=useState("");
+  const [showChange,setShowChange]=useState(false);
+  const [currentPassword,setCurrentPassword]=useState("");
+  const [nextPassword,setNextPassword]=useState("");
+  const [confirmPassword,setConfirmPassword]=useState("");
+  const [changeMessage,setChangeMessage]=useState("");
+  const [changeError,setChangeError]=useState("");
+
+  useEffect(()=>{
+    try{if(sessionStorage.getItem(AUTH_OK_KEY)==="true")setUnlocked(true)}catch{}
+  },[]);
+
+  const lockApp=()=>{
+    setUnlocked(false);
+    setPasswordInput("");
+    setLoginError("");
+    setShowChange(false);
+    setChangeMessage("");
+    setChangeError("");
+    try{sessionStorage.removeItem(AUTH_OK_KEY)}catch{}
+  };
+
+  const handleUnlock=e=>{
+    e.preventDefault();
+    if(hashPassword(passwordInput)!==getSavedPasswordHash()){
+      setLoginError("비밀번호가 일치하지 않습니다.");
+      return;
+    }
+    setUnlocked(true);
+    setPasswordInput("");
+    setLoginError("");
+    try{sessionStorage.setItem(AUTH_OK_KEY,"true")}catch{}
+  };
+
+  const handleChangePassword=e=>{
+    e.preventDefault();
+    setChangeError("");
+    setChangeMessage("");
+    if(hashPassword(currentPassword)!==getSavedPasswordHash()){
+      setChangeError("현재 비밀번호가 올바르지 않습니다.");
+      return;
+    }
+    if(nextPassword.length<8){
+      setChangeError("새 비밀번호는 8자 이상으로 입력해주세요.");
+      return;
+    }
+    if(nextPassword!==confirmPassword){
+      setChangeError("새 비밀번호 확인이 일치하지 않습니다.");
+      return;
+    }
+    persistPassword(nextPassword);
+    setCurrentPassword("");
+    setNextPassword("");
+    setConfirmPassword("");
+    setShowChange(false);
+    setChangeMessage("비밀번호가 변경되었습니다.");
+  };
+
+  if(!unlocked){
+    return(
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"24px",background:"radial-gradient(circle at top,#1b2236 0%,#0f1117 58%)"}}>
+      <div className="card" style={{width:"100%",maxWidth:420,padding:"28px 24px",boxShadow:"0 20px 60px rgba(0,0,0,0.35)"}}>
+        <div style={{fontSize:12,fontWeight:700,color:C.accent,letterSpacing:"0.08em",marginBottom:10}}>PRIVATE ACCESS</div>
+        <h1 style={{fontSize:28,fontWeight:800,color:C.text,marginBottom:10,lineHeight:1.25}}>연봉 및 재정 관리 페이지</h1>
+        <p style={{fontSize:13,color:C.muted,lineHeight:1.6,marginBottom:18}}>링크 접속 후 비밀번호를 입력해야 내용이 보이도록 잠금 화면을 추가했습니다.</p>
+        <form onSubmit={handleUnlock}>
+          <div style={{fontSize:12,color:C.muted,marginBottom:6}}>비밀번호</div>
+          <input type="password" className="ti" value={passwordInput} onChange={e=>setPasswordInput(e.target.value)} placeholder="비밀번호 입력" autoComplete="current-password" style={{marginBottom:12}}/>
+          {loginError&&<div style={{marginBottom:12,padding:"10px 12px",borderRadius:10,background:"rgba(248,113,113,0.12)",border:"1px solid rgba(248,113,113,0.25)",fontSize:12,color:C.red}}>{loginError}</div>}
+          <button className="btn-primary" type="submit">접속하기</button>
+        </form>
+        <div style={{marginTop:14,fontSize:11.5,color:C.dim,lineHeight:1.6}}>기본 비밀번호는 배포 시 `weepingangelDW1!` 이며, 로그인 후 변경할 수 있습니다.</div>
+      </div>
+    </div>);
+  }
+
+  return(<>
+    {showChange&&<div style={{position:"fixed",inset:0,zIndex:20,background:"rgba(15,17,23,0.74)",display:"flex",alignItems:"center",justifyContent:"center",padding:"20px"}}>
+      <div className="card" style={{width:"100%",maxWidth:420,padding:"24px 22px",boxShadow:"0 20px 60px rgba(0,0,0,0.35)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+          <div>
+            <div style={{fontSize:18,fontWeight:700,color:C.text,marginBottom:4}}>비밀번호 변경</div>
+            <div style={{fontSize:12,color:C.muted}}>현재 비밀번호를 확인한 뒤 새 비밀번호로 바꿉니다.</div>
+          </div>
+          <button onClick={()=>{setShowChange(false);setChangeError("");}} style={{background:"none",border:"none",color:C.dim,fontSize:20,cursor:"pointer",lineHeight:1}}>×</button>
+        </div>
+        <form onSubmit={handleChangePassword}>
+          <div style={{fontSize:12,color:C.muted,marginBottom:6}}>현재 비밀번호</div>
+          <input type="password" className="ti" value={currentPassword} onChange={e=>setCurrentPassword(e.target.value)} autoComplete="current-password" style={{marginBottom:12}}/>
+          <div style={{fontSize:12,color:C.muted,marginBottom:6}}>새 비밀번호</div>
+          <input type="password" className="ti" value={nextPassword} onChange={e=>setNextPassword(e.target.value)} autoComplete="new-password" style={{marginBottom:12}}/>
+          <div style={{fontSize:12,color:C.muted,marginBottom:6}}>새 비밀번호 확인</div>
+          <input type="password" className="ti" value={confirmPassword} onChange={e=>setConfirmPassword(e.target.value)} autoComplete="new-password" style={{marginBottom:12}}/>
+          {changeError&&<div style={{marginBottom:12,padding:"10px 12px",borderRadius:10,background:"rgba(248,113,113,0.12)",border:"1px solid rgba(248,113,113,0.25)",fontSize:12,color:C.red}}>{changeError}</div>}
+          <div style={{display:"flex",gap:8}}>
+            <button className="btn-primary" type="submit">변경 저장</button>
+            <button type="button" onClick={()=>{setShowChange(false);setChangeError("");}} style={{padding:"10px 18px",background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,color:C.muted,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>닫기</button>
+          </div>
+        </form>
+      </div>
+    </div>}
+    <App onLock={lockApp} onPasswordChanged={()=>{setShowChange(true);setChangeMessage("");setChangeError("");}}/>
+    {changeMessage&&<div style={{position:"fixed",right:20,bottom:20,zIndex:25,padding:"12px 14px",borderRadius:12,background:"rgba(74,222,128,0.14)",border:"1px solid rgba(74,222,128,0.3)",color:C.green,fontSize:12,fontWeight:600,boxShadow:"0 10px 24px rgba(0,0,0,0.24)"}}>{changeMessage}</div>}
+  </>);
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<PasswordGate/>);
+</script>
+</body>
+</html>

@@ -30,12 +30,16 @@ input[type=number]::-webkit-inner-spin-button{opacity:0.3}
 <div id="root"></div>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script type="text/babel">
-const {useState,useMemo,useEffect}=React;
+const {useState,useMemo,useEffect,useRef}=React;
 const AUTH_OK_KEY="salary-planner-auth-ok-v1";
 const PASSWORD_STORAGE_KEY="salary-planner-password-v1";
 const DEFAULT_PASSWORD="weepingangelDW1!";
+const SUPABASE_URL="https://nobltfmywpehcusmnoxw.supabase.co";
+const SUPABASE_ANON_KEY="sb_publishable__H83jjYDDzeuBt2ctxmB5w_aex91oSu";
+const SUPABASE_TABLE="salary_planner_snapshots";
 
 function hashPassword(value){
   let hash=5381;
@@ -52,6 +56,15 @@ function persistPassword(nextPassword){
   const nextHash=hashPassword(nextPassword);
   try{localStorage.setItem(PASSWORD_STORAGE_KEY,nextHash)}catch{}
   return nextHash;
+}
+
+function isSupabaseConfigured(){
+  return !!(SUPABASE_URL&&SUPABASE_ANON_KEY&&window.supabase?.createClient);
+}
+
+function createSupabaseBrowserClient(){
+  if(!isSupabaseConfigured())return null;
+  return window.supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY);
 }
 
 // ══════════ 2026 4대보험 요율 ══════════
@@ -228,8 +241,18 @@ function LineChart({records,dataKey,color,label,formatter,height=180,nonTaxVal})
 const SK="salary-planner-v1",TK="salary-records-v2";
 function ldP(){try{return JSON.parse(localStorage.getItem(SK))||{}}catch{return{}}}
 function ldR(){try{return JSON.parse(localStorage.getItem(TK))||[]}catch{return[]}}
+function readLocalSnapshot(){return{planner:ldP(),records:ldR()}}
+function writeLocalSnapshot(snapshot){
+  try{
+    localStorage.setItem(SK,JSON.stringify(snapshot?.planner||{}));
+    localStorage.setItem(TK,JSON.stringify(snapshot?.records||[]));
+  }catch{}
+}
+function hasSnapshotContent(snapshot){
+  return !!(snapshot&&((snapshot.records&&snapshot.records.length)||Object.keys(snapshot.planner||{}).length));
+}
 
-function App({onLock,onPasswordChanged}){
+function App({onLock,onPasswordChanged,onCloudSnapshotChange,onCloudRefresh,onCloudLogout,cloudStatus,cloudEmail,cloudMessage}){
   const saved=useMemo(ldP,[]);
   const[sal,setSal]=useState(saved.sal??50000000);
   const[tab,setTab]=useState("net");
@@ -251,7 +274,7 @@ function App({onLock,onPasswordChanged}){
   const[tYear,setTYear]=useState("");
   const[tSal,setTSal]=useState("");
   const[tMemo,setTMemo]=useState("");
-  const[tNonTax,setTNonTax]=useState("20");
+  const[tNonTax,setTNonTax]=useState(saved.tNonTax??"20");
   const[editIdx,setEditIdx]=useState(null);
   const[showForm,setShowForm]=useState(false);
   const[expandIdx,setExpandIdx]=useState(null);
@@ -264,7 +287,7 @@ function App({onLock,onPasswordChanged}){
   const rv=useMemo(()=>reverseCalc(rGoal,rYears*12,rRet,rCash,rInv2,rRatio),[rGoal,rYears,rRet,rCash,rInv2,rRatio]);
   const rvPct=r.net>0?Math.round(rv.monthly/r.net*100):0;
 
-  useEffect(()=>{try{localStorage.setItem(SK,JSON.stringify({sal,sav,inv,ret,goal,curCash,curInv,rGoal,rYears,rRet,rCash,rInv:rInv2,rRatio}))}catch{}},[sal,sav,inv,ret,goal,curCash,curInv,rGoal,rYears,rRet,rCash,rInv2,rRatio]);
+  useEffect(()=>{try{localStorage.setItem(SK,JSON.stringify({sal,sav,inv,ret,goal,curCash,curInv,rGoal,rYears,rRet,rCash,rInv:rInv2,rRatio,tNonTax}))}catch{}},[sal,sav,inv,ret,goal,curCash,curInv,rGoal,rYears,rRet,rCash,rInv2,rRatio,tNonTax]);
 
   const saveRec=d=>{setRecords(d);try{localStorage.setItem(TK,JSON.stringify(d))}catch{}};
   const nonTaxVal=parseInt(tNonTax||"0")*10000;
@@ -285,15 +308,29 @@ function App({onLock,onPasswordChanged}){
   const mx=Math.max(...deds.map(d=>d.v),1);
   const tabs=[{id:"net",l:"실수령",c:C.green},{id:"insurance",l:"4대보험",c:C.accent},{id:"tax",l:"세금",c:C.orange},{id:"goal",l:"목표 기간",c:C.purple},{id:"reverse",l:"필요 금액",c:C.pink},{id:"tracker",l:"성장 기록",c:C.teal}];
 
+  useEffect(()=>{
+    if(!onCloudSnapshotChange)return;
+    onCloudSnapshotChange({
+      planner:{sal,sav,inv,ret,goal,curCash,curInv,rGoal,rYears,rRet,rCash,rInv:rInv2,rRatio,tNonTax},
+      records
+    });
+  },[sal,sav,inv,ret,goal,curCash,curInv,rGoal,rYears,rRet,rCash,rInv2,rRatio,tNonTax,records]);
+
   return(
   <div style={{maxWidth:640,margin:"0 auto",padding:"32px 20px 64px"}}>
     <div className="card" style={{padding:"14px 16px",marginBottom:18,display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap",
       background:"linear-gradient(135deg,rgba(108,159,255,0.08),rgba(45,212,191,0.08))",border:`1px solid ${C.accent}33`}}>
       <div>
-        <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:4}}>비밀번호 보호가 활성화되어 있습니다</div>
-        <div style={{fontSize:12,color:C.muted,lineHeight:1.5}}>이 브라우저에서는 변경한 비밀번호가 로컬 저장소에 유지됩니다.</div>
+        <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:4}}>보호 모드와 클라우드 동기화가 활성화되어 있습니다</div>
+        <div style={{fontSize:12,color:C.muted,lineHeight:1.5}}>
+          {cloudEmail?`${cloudEmail} 계정으로 연결됨`:"클라우드 연결 전"} {cloudMessage?`· ${cloudMessage}`:""}
+        </div>
       </div>
       <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+        {onCloudRefresh&&<button className="btn-sm" onClick={onCloudRefresh} style={{background:C.teal+"18",borderColor:C.teal+"33",color:C.teal,padding:"8px 12px",fontSize:12}}>
+          {cloudStatus==="syncing"?"동기화 중":"클라우드 새로고침"}
+        </button>}
+        {onCloudLogout&&<button className="btn-sm" onClick={onCloudLogout} style={{background:C.orange+"18",borderColor:C.orange+"33",color:C.orange,padding:"8px 12px",fontSize:12}}>클라우드 로그아웃</button>}
         <button className="btn-sm" onClick={onPasswordChanged} style={{background:C.accent+"18",borderColor:C.accent+"33",color:C.accent,padding:"8px 12px",fontSize:12}}>비밀번호 변경</button>
         <button className="btn-sm" onClick={onLock} style={{background:C.red+"18",borderColor:C.red+"33",color:C.red,padding:"8px 12px",fontSize:12}}>잠금</button>
       </div>
@@ -556,7 +593,7 @@ function App({onLock,onPasswordChanged}){
   </div>);
 }
 
-function PasswordGate(){
+function AccessShell(){
   const [unlocked,setUnlocked]=useState(false);
   const [passwordInput,setPasswordInput]=useState("");
   const [loginError,setLoginError]=useState("");
@@ -566,10 +603,45 @@ function PasswordGate(){
   const [confirmPassword,setConfirmPassword]=useState("");
   const [changeMessage,setChangeMessage]=useState("");
   const [changeError,setChangeError]=useState("");
+  const [authMode,setAuthMode]=useState("signin");
+  const [authEmail,setAuthEmail]=useState("");
+  const [authPassword,setAuthPassword]=useState("");
+  const [authError,setAuthError]=useState("");
+  const [authMessage,setAuthMessage]=useState("");
+  const [authBusy,setAuthBusy]=useState(false);
+  const [session,setSession]=useState(null);
+  const [authReady,setAuthReady]=useState(!isSupabaseConfigured());
+  const [cloudStatus,setCloudStatus]=useState(isSupabaseConfigured()?"연결 대기":"설정 필요");
+  const [cloudMessage,setCloudMessage]=useState(isSupabaseConfigured()?"로그인 필요":"Supabase URL/Anon Key 입력 필요");
+  const [appVersion,setAppVersion]=useState(0);
+  const syncTimerRef=useRef(null);
+  const lastSnapshotRef=useRef("");
+  const client=useMemo(createSupabaseBrowserClient,[]);
 
   useEffect(()=>{
     try{if(sessionStorage.getItem(AUTH_OK_KEY)==="true")setUnlocked(true)}catch{}
   },[]);
+
+  useEffect(()=>{
+    if(!client)return;
+    let mounted=true;
+    client.auth.getSession().then(({data:{session}})=>{
+      if(!mounted)return;
+      setSession(session);
+      setAuthReady(true);
+      if(session){
+        setCloudStatus("동기화 준비");
+        setCloudMessage("클라우드 데이터를 불러오는 중");
+      }
+    });
+    const {data:{subscription}}=client.auth.onAuthStateChange((_event,nextSession)=>{
+      if(mounted)setSession(nextSession);
+    });
+    return()=>{
+      mounted=false;
+      subscription.unsubscribe();
+    };
+  },[client]);
 
   const lockApp=()=>{
     setUnlocked(false);
@@ -617,13 +689,104 @@ function PasswordGate(){
     setChangeMessage("비밀번호가 변경되었습니다.");
   };
 
+  const loadCloudSnapshot=async(userId)=>{
+    if(!client||!userId)return;
+    setCloudStatus("syncing");
+    setCloudMessage("클라우드 데이터를 불러오는 중");
+    const {data,error}=await client.from(SUPABASE_TABLE).select("planner,records,updated_at").eq("user_id",userId).maybeSingle();
+    if(error){
+      setCloudStatus("error");
+      setCloudMessage(error.message);
+      return;
+    }
+    if(data){
+      const snapshot={planner:data.planner||{},records:Array.isArray(data.records)?data.records:[]};
+      writeLocalSnapshot(snapshot);
+      lastSnapshotRef.current=JSON.stringify(snapshot);
+      setCloudMessage(data.updated_at?`마지막 클라우드 저장 ${new Date(data.updated_at).toLocaleString("ko-KR")}`:"클라우드 데이터 로드 완료");
+      setCloudStatus("synced");
+    }else{
+      const localSnapshot=readLocalSnapshot();
+      if(hasSnapshotContent(localSnapshot))await saveCloudSnapshot(localSnapshot,userId,true);
+      else{
+        setCloudStatus("synced");
+        setCloudMessage("새 클라우드 계정입니다. 첫 입력부터 자동 저장됩니다.");
+      }
+    }
+    setAppVersion(v=>v+1);
+  };
+
+  const saveCloudSnapshot=async(snapshot,forcedUserId,isImmediate=false)=>{
+    const userId=forcedUserId||session?.user?.id;
+    if(!client||!userId)return;
+    const runSave=async()=>{
+      setCloudStatus("syncing");
+      const payload={user_id:userId,planner:snapshot.planner||{},records:snapshot.records||[],updated_at:new Date().toISOString()};
+      const {error}=await client.from(SUPABASE_TABLE).upsert(payload);
+      if(error){
+        setCloudStatus("error");
+        setCloudMessage(error.message);
+        return;
+      }
+      setCloudStatus("synced");
+      setCloudMessage(`마지막 자동 저장 ${new Date().toLocaleString("ko-KR")}`);
+    };
+    if(isImmediate){
+      lastSnapshotRef.current=JSON.stringify(snapshot);
+      await runSave();
+      return;
+    }
+    const serialized=JSON.stringify(snapshot);
+    if(serialized===lastSnapshotRef.current)return;
+    lastSnapshotRef.current=serialized;
+    if(syncTimerRef.current)clearTimeout(syncTimerRef.current);
+    syncTimerRef.current=setTimeout(runSave,800);
+  };
+
+  useEffect(()=>{
+    if(session?.user?.id)loadCloudSnapshot(session.user.id);
+  },[session?.user?.id]);
+
+  useEffect(()=>()=>{if(syncTimerRef.current)clearTimeout(syncTimerRef.current);},[]);
+
+  const handleCloudAuth=async e=>{
+    e.preventDefault();
+    if(!client)return;
+    setAuthBusy(true);
+    setAuthError("");
+    setAuthMessage("");
+    const credentials={email:authEmail.trim(),password:authPassword};
+    const result=authMode==="signup"
+      ? await client.auth.signUp(credentials)
+      : await client.auth.signInWithPassword(credentials);
+    setAuthBusy(false);
+    if(result.error){
+      setAuthError(result.error.message);
+      return;
+    }
+    if(authMode==="signup"&&!result.data.session){
+      setAuthMessage("회원가입 메일을 확인한 뒤 로그인해주세요.");
+      return;
+    }
+    setAuthPassword("");
+    setAuthMessage(authMode==="signup"?"회원가입 및 로그인 완료":"로그인 완료");
+  };
+
+  const handleCloudLogout=async()=>{
+    if(!client)return;
+    await client.auth.signOut();
+    setSession(null);
+    setCloudStatus("연결 대기");
+    setCloudMessage("로그인 필요");
+  };
+
   if(!unlocked){
     return(
     <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"24px",background:"radial-gradient(circle at top,#1b2236 0%,#0f1117 58%)"}}>
       <div className="card" style={{width:"100%",maxWidth:420,padding:"28px 24px",boxShadow:"0 20px 60px rgba(0,0,0,0.35)"}}>
         <div style={{fontSize:12,fontWeight:700,color:C.accent,letterSpacing:"0.08em",marginBottom:10}}>PRIVATE ACCESS</div>
         <h1 style={{fontSize:28,fontWeight:800,color:C.text,marginBottom:10,lineHeight:1.25}}>연봉 및 재정 관리 페이지</h1>
-        <p style={{fontSize:13,color:C.muted,lineHeight:1.6,marginBottom:18}}>링크 접속 후 비밀번호를 입력해야 내용이 보이도록 잠금 화면을 추가했습니다.</p>
+        <p style={{fontSize:13,color:C.muted,lineHeight:1.6,marginBottom:18}}>링크 접속 후 비밀번호를 입력해야 내용이 보이도록 잠금 화면을 유지합니다.</p>
         <form onSubmit={handleUnlock}>
           <div style={{fontSize:12,color:C.muted,marginBottom:6}}>비밀번호</div>
           <input type="password" className="ti" value={passwordInput} onChange={e=>setPasswordInput(e.target.value)} placeholder="비밀번호 입력" autoComplete="current-password" style={{marginBottom:12}}/>
@@ -634,6 +797,35 @@ function PasswordGate(){
       </div>
     </div>);
   }
+
+  const setupCard=(
+    <div className="card" style={{maxWidth:760,margin:"28px auto 18px",padding:"22px 20px",border:`1px solid ${C.orange}44`}}>
+      <div style={{fontSize:18,fontWeight:700,color:C.text,marginBottom:8}}>Supabase 설정이 필요합니다</div>
+      <div style={{fontSize:13,color:C.muted,lineHeight:1.7,marginBottom:14}}>
+        상단의 <code>SUPABASE_URL</code> 과 <code>SUPABASE_ANON_KEY</code> 를 본인 프로젝트 값으로 채우면, 같은 계정으로 로그인한 여러 기기에서 데이터를 자동으로 불러옵니다.
+      </div>
+      <div style={{fontSize:12,color:C.muted,marginBottom:8}}>테이블 생성 SQL</div>
+      <pre style={{whiteSpace:"pre-wrap",wordBreak:"break-word",background:"#12141c",border:`1px solid ${C.border}`,borderRadius:12,padding:"14px 16px",fontSize:11.5,color:C.text,lineHeight:1.6}}>
+{`create table if not exists public.${SUPABASE_TABLE} (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  planner jsonb not null default '{}'::jsonb,
+  records jsonb not null default '[]'::jsonb,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.${SUPABASE_TABLE} enable row level security;
+
+create policy "own row select" on public.${SUPABASE_TABLE}
+for select using (auth.uid() = user_id);
+
+create policy "own row insert" on public.${SUPABASE_TABLE}
+for insert with check (auth.uid() = user_id);
+
+create policy "own row update" on public.${SUPABASE_TABLE}
+for update using (auth.uid() = user_id);`}
+      </pre>
+    </div>
+  );
 
   return(<>
     {showChange&&<div style={{position:"fixed",inset:0,zIndex:20,background:"rgba(15,17,23,0.74)",display:"flex",alignItems:"center",justifyContent:"center",padding:"20px"}}>
@@ -660,12 +852,53 @@ function PasswordGate(){
         </form>
       </div>
     </div>}
-    <App onLock={lockApp} onPasswordChanged={()=>{setShowChange(true);setChangeMessage("");setChangeError("");}}/>
+
+    {!client&&setupCard}
+
+    {!client&&<App key={`local-${appVersion}`} onLock={lockApp} onPasswordChanged={()=>{setShowChange(true);setChangeMessage("");setChangeError("");}} cloudStatus={cloudStatus} cloudMessage={cloudMessage}/>}
+
+    {client&&!authReady&&<div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"24px"}}>
+      <div className="card" style={{width:"100%",maxWidth:420,padding:"28px 24px",textAlign:"center"}}>클라우드 세션을 확인하는 중입니다...</div>
+    </div>}
+
+    {client&&authReady&&!session&&<div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"24px",background:"radial-gradient(circle at top,#1b2236 0%,#0f1117 58%)"}}>
+      <div className="card" style={{width:"100%",maxWidth:430,padding:"28px 24px",boxShadow:"0 20px 60px rgba(0,0,0,0.35)"}}>
+        <div style={{fontSize:12,fontWeight:700,color:C.teal,letterSpacing:"0.08em",marginBottom:10}}>CLOUD SYNC</div>
+        <div style={{fontSize:26,fontWeight:800,color:C.text,marginBottom:10,lineHeight:1.25}}>여러 기기 자동 동기화</div>
+        <p style={{fontSize:13,color:C.muted,lineHeight:1.6,marginBottom:18}}>같은 Supabase 계정으로 로그인하면 저장된 연봉/재정 데이터가 자동으로 불러와집니다.</p>
+        <div style={{display:"flex",gap:8,marginBottom:14}}>
+          <button className="btn-sm" onClick={()=>setAuthMode("signin")} style={{flex:1,padding:"10px 12px",background:authMode==="signin"?C.teal+"18":"transparent",borderColor:authMode==="signin"?C.teal+"44":C.border,color:authMode==="signin"?C.teal:C.muted}}>로그인</button>
+          <button className="btn-sm" onClick={()=>setAuthMode("signup")} style={{flex:1,padding:"10px 12px",background:authMode==="signup"?C.accent+"18":"transparent",borderColor:authMode==="signup"?C.accent+"44":C.border,color:authMode==="signup"?C.accent:C.muted}}>회원가입</button>
+        </div>
+        <form onSubmit={handleCloudAuth}>
+          <div style={{fontSize:12,color:C.muted,marginBottom:6}}>이메일</div>
+          <input type="email" className="ti" value={authEmail} onChange={e=>setAuthEmail(e.target.value)} placeholder="name@example.com" autoComplete="email" style={{marginBottom:12}}/>
+          <div style={{fontSize:12,color:C.muted,marginBottom:6}}>비밀번호</div>
+          <input type="password" className="ti" value={authPassword} onChange={e=>setAuthPassword(e.target.value)} placeholder="클라우드 계정 비밀번호" autoComplete={authMode==="signup"?"new-password":"current-password"} style={{marginBottom:12}}/>
+          {authError&&<div style={{marginBottom:12,padding:"10px 12px",borderRadius:10,background:"rgba(248,113,113,0.12)",border:"1px solid rgba(248,113,113,0.25)",fontSize:12,color:C.red}}>{authError}</div>}
+          {authMessage&&<div style={{marginBottom:12,padding:"10px 12px",borderRadius:10,background:"rgba(74,222,128,0.12)",border:"1px solid rgba(74,222,128,0.25)",fontSize:12,color:C.green}}>{authMessage}</div>}
+          <button className="btn-primary" type="submit">{authBusy?(authMode==="signup"?"가입 중...":"로그인 중..."):(authMode==="signup"?"회원가입 후 시작":"로그인 후 시작")}</button>
+        </form>
+      </div>
+    </div>}
+
+    {client&&authReady&&session&&<App
+      key={`cloud-${appVersion}-${session.user.id}`}
+      onLock={lockApp}
+      onPasswordChanged={()=>{setShowChange(true);setChangeMessage("");setChangeError("");}}
+      onCloudSnapshotChange={saveCloudSnapshot}
+      onCloudRefresh={()=>loadCloudSnapshot(session.user.id)}
+      onCloudLogout={handleCloudLogout}
+      cloudStatus={cloudStatus}
+      cloudEmail={session.user.email}
+      cloudMessage={cloudMessage}
+    />}
+
     {changeMessage&&<div style={{position:"fixed",right:20,bottom:20,zIndex:25,padding:"12px 14px",borderRadius:12,background:"rgba(74,222,128,0.14)",border:"1px solid rgba(74,222,128,0.3)",color:C.green,fontSize:12,fontWeight:600,boxShadow:"0 10px 24px rgba(0,0,0,0.24)"}}>{changeMessage}</div>}
   </>);
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<PasswordGate/>);
+ReactDOM.createRoot(document.getElementById("root")).render(<AccessShell/>);
 </script>
 </body>
 </html>

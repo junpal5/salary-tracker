@@ -34,29 +34,9 @@ input[type=number]::-webkit-inner-spin-button{opacity:0.3}
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script type="text/babel">
 const {useState,useMemo,useEffect,useRef}=React;
-const AUTH_OK_KEY="salary-planner-auth-ok-v1";
-const PASSWORD_STORAGE_KEY="salary-planner-password-v1";
-const DEFAULT_PASSWORD="weepingangelDW1!";
 const SUPABASE_URL="https://nobltfmywpehcusmnoxw.supabase.co";
 const SUPABASE_ANON_KEY="sb_publishable__H83jjYDDzeuBt2ctxmB5w_aex91oSu";
 const SUPABASE_TABLE="salary_planner_snapshots";
-
-function hashPassword(value){
-  let hash=5381;
-  for(let i=0;i<value.length;i++)hash=((hash<<5)+hash)+value.charCodeAt(i);
-  return String(hash>>>0);
-}
-
-function getSavedPasswordHash(){
-  try{return localStorage.getItem(PASSWORD_STORAGE_KEY)||hashPassword(DEFAULT_PASSWORD);}
-  catch{return hashPassword(DEFAULT_PASSWORD);}
-}
-
-function persistPassword(nextPassword){
-  const nextHash=hashPassword(nextPassword);
-  try{localStorage.setItem(PASSWORD_STORAGE_KEY,nextHash)}catch{}
-  return nextHash;
-}
 
 function isSupabaseConfigured(){
   return !!(SUPABASE_URL&&SUPABASE_ANON_KEY&&window.supabase?.createClient);
@@ -238,22 +218,41 @@ function LineChart({records,dataKey,color,label,formatter,height=180,nonTaxVal})
 }
 
 // ══════════ 메인 앱 ══════════
-const SK="salary-planner-v1",TK="salary-records-v2";
-function ldP(){try{return JSON.parse(localStorage.getItem(SK))||{}}catch{return{}}}
-function ldR(){try{return JSON.parse(localStorage.getItem(TK))||[]}catch{return[]}}
-function readLocalSnapshot(){return{planner:ldP(),records:ldR()}}
-function writeLocalSnapshot(snapshot){
+const LEGACY_SK="salary-planner-v1",LEGACY_TK="salary-records-v2";
+function scopeKeys(scope){
+  return{planner:`salary-planner-v2:${scope}:planner`,records:`salary-planner-v2:${scope}:records`};
+}
+function ldP(scope){try{return JSON.parse(localStorage.getItem(scopeKeys(scope).planner))||{}}catch{return{}}}
+function ldR(scope){try{return JSON.parse(localStorage.getItem(scopeKeys(scope).records))||[]}catch{return[]}}
+function readLegacySnapshot(){
   try{
-    localStorage.setItem(SK,JSON.stringify(snapshot?.planner||{}));
-    localStorage.setItem(TK,JSON.stringify(snapshot?.records||[]));
+    return{
+      planner:JSON.parse(localStorage.getItem(LEGACY_SK))||{},
+      records:JSON.parse(localStorage.getItem(LEGACY_TK))||[]
+    };
+  }catch{return{planner:{},records:[]}}
+}
+function readLocalSnapshot(scope){return{planner:ldP(scope),records:ldR(scope)}}
+function writeLocalSnapshot(scope,snapshot){
+  const keys=scopeKeys(scope);
+  try{
+    localStorage.setItem(keys.planner,JSON.stringify(snapshot?.planner||{}));
+    localStorage.setItem(keys.records,JSON.stringify(snapshot?.records||[]));
+  }catch{}
+}
+function clearLocalSnapshot(scope){
+  const keys=scopeKeys(scope);
+  try{
+    localStorage.removeItem(keys.planner);
+    localStorage.removeItem(keys.records);
   }catch{}
 }
 function hasSnapshotContent(snapshot){
   return !!(snapshot&&((snapshot.records&&snapshot.records.length)||Object.keys(snapshot.planner||{}).length));
 }
 
-function App({onLock,onPasswordChanged,onCloudSnapshotChange,onCloudRefresh,onCloudLogout,cloudStatus,cloudEmail,cloudMessage}){
-  const saved=useMemo(ldP,[]);
+function App({storageScope,onCloudSnapshotChange,onCloudRefresh,onCloudLogout,cloudStatus,cloudEmail,cloudMessage}){
+  const saved=useMemo(()=>ldP(storageScope),[storageScope]);
   const[sal,setSal]=useState(saved.sal??50000000);
   const[tab,setTab]=useState("net");
   const[sav,setSav]=useState(saved.sav??500000);
@@ -270,7 +269,7 @@ function App({onLock,onPasswordChanged,onCloudSnapshotChange,onCloudRefresh,onCl
   const[rRatio,setRRatio]=useState(saved.rRatio??50);
 
   // 성장 트래커 state
-  const[records,setRecords]=useState(ldR);
+  const[records,setRecords]=useState(()=>ldR(storageScope));
   const[tYear,setTYear]=useState("");
   const[tSal,setTSal]=useState("");
   const[tMemo,setTMemo]=useState("");
@@ -287,9 +286,9 @@ function App({onLock,onPasswordChanged,onCloudSnapshotChange,onCloudRefresh,onCl
   const rv=useMemo(()=>reverseCalc(rGoal,rYears*12,rRet,rCash,rInv2,rRatio),[rGoal,rYears,rRet,rCash,rInv2,rRatio]);
   const rvPct=r.net>0?Math.round(rv.monthly/r.net*100):0;
 
-  useEffect(()=>{try{localStorage.setItem(SK,JSON.stringify({sal,sav,inv,ret,goal,curCash,curInv,rGoal,rYears,rRet,rCash,rInv:rInv2,rRatio,tNonTax}))}catch{}},[sal,sav,inv,ret,goal,curCash,curInv,rGoal,rYears,rRet,rCash,rInv2,rRatio,tNonTax]);
+  useEffect(()=>{writeLocalSnapshot(storageScope,{planner:{sal,sav,inv,ret,goal,curCash,curInv,rGoal,rYears,rRet,rCash,rInv:rInv2,rRatio,tNonTax},records})},[storageScope,sal,sav,inv,ret,goal,curCash,curInv,rGoal,rYears,rRet,rCash,rInv2,rRatio,tNonTax,records]);
 
-  const saveRec=d=>{setRecords(d);try{localStorage.setItem(TK,JSON.stringify(d))}catch{}};
+  const saveRec=d=>{setRecords(d);writeLocalSnapshot(storageScope,{planner:{sal,sav,inv,ret,goal,curCash,curInv,rGoal,rYears,rRet,rCash,rInv:rInv2,rRatio,tNonTax},records:d})};
   const nonTaxVal=parseInt(tNonTax||"0")*10000;
 
   const handleTSalInput=val=>{const num=val.replace(/[^0-9]/g,"");setTSal(num?parseInt(num).toLocaleString("ko-KR"):"")};
@@ -330,9 +329,7 @@ function App({onLock,onPasswordChanged,onCloudSnapshotChange,onCloudRefresh,onCl
         {onCloudRefresh&&<button className="btn-sm" onClick={onCloudRefresh} style={{background:C.teal+"18",borderColor:C.teal+"33",color:C.teal,padding:"8px 12px",fontSize:12}}>
           {cloudStatus==="syncing"?"동기화 중":"클라우드 새로고침"}
         </button>}
-        {onCloudLogout&&<button className="btn-sm" onClick={onCloudLogout} style={{background:C.orange+"18",borderColor:C.orange+"33",color:C.orange,padding:"8px 12px",fontSize:12}}>클라우드 로그아웃</button>}
-        <button className="btn-sm" onClick={onPasswordChanged} style={{background:C.accent+"18",borderColor:C.accent+"33",color:C.accent,padding:"8px 12px",fontSize:12}}>비밀번호 변경</button>
-        <button className="btn-sm" onClick={onLock} style={{background:C.red+"18",borderColor:C.red+"33",color:C.red,padding:"8px 12px",fontSize:12}}>잠금</button>
+        {onCloudLogout&&<button className="btn-sm" onClick={onCloudLogout} style={{background:C.orange+"18",borderColor:C.orange+"33",color:C.orange,padding:"8px 12px",fontSize:12}}>로그아웃</button>}
       </div>
     </div>
     <div style={{textAlign:"center",marginBottom:32}}>
@@ -594,15 +591,6 @@ function App({onLock,onPasswordChanged,onCloudSnapshotChange,onCloudRefresh,onCl
 }
 
 function AccessShell(){
-  const [unlocked,setUnlocked]=useState(false);
-  const [passwordInput,setPasswordInput]=useState("");
-  const [loginError,setLoginError]=useState("");
-  const [showChange,setShowChange]=useState(false);
-  const [currentPassword,setCurrentPassword]=useState("");
-  const [nextPassword,setNextPassword]=useState("");
-  const [confirmPassword,setConfirmPassword]=useState("");
-  const [changeMessage,setChangeMessage]=useState("");
-  const [changeError,setChangeError]=useState("");
   const [authMode,setAuthMode]=useState("signin");
   const [authEmail,setAuthEmail]=useState("");
   const [authPassword,setAuthPassword]=useState("");
@@ -614,13 +602,12 @@ function AccessShell(){
   const [cloudStatus,setCloudStatus]=useState(isSupabaseConfigured()?"연결 대기":"설정 필요");
   const [cloudMessage,setCloudMessage]=useState(isSupabaseConfigured()?"로그인 필요":"Supabase URL/Anon Key 입력 필요");
   const [appVersion,setAppVersion]=useState(0);
+  const [showImportChoice,setShowImportChoice]=useState(false);
+  const [importBusy,setImportBusy]=useState(false);
   const syncTimerRef=useRef(null);
   const lastSnapshotRef=useRef("");
   const client=useMemo(createSupabaseBrowserClient,[]);
-
-  useEffect(()=>{
-    try{if(sessionStorage.getItem(AUTH_OK_KEY)==="true")setUnlocked(true)}catch{}
-  },[]);
+  const activeScope=session?.user?.id?`user:${session.user.id}`:"guest";
 
   useEffect(()=>{
     if(!client)return;
@@ -643,52 +630,6 @@ function AccessShell(){
     };
   },[client]);
 
-  const lockApp=()=>{
-    setUnlocked(false);
-    setPasswordInput("");
-    setLoginError("");
-    setShowChange(false);
-    setChangeMessage("");
-    setChangeError("");
-    try{sessionStorage.removeItem(AUTH_OK_KEY)}catch{}
-  };
-
-  const handleUnlock=e=>{
-    e.preventDefault();
-    if(hashPassword(passwordInput)!==getSavedPasswordHash()){
-      setLoginError("비밀번호가 일치하지 않습니다.");
-      return;
-    }
-    setUnlocked(true);
-    setPasswordInput("");
-    setLoginError("");
-    try{sessionStorage.setItem(AUTH_OK_KEY,"true")}catch{}
-  };
-
-  const handleChangePassword=e=>{
-    e.preventDefault();
-    setChangeError("");
-    setChangeMessage("");
-    if(hashPassword(currentPassword)!==getSavedPasswordHash()){
-      setChangeError("현재 비밀번호가 올바르지 않습니다.");
-      return;
-    }
-    if(nextPassword.length<8){
-      setChangeError("새 비밀번호는 8자 이상으로 입력해주세요.");
-      return;
-    }
-    if(nextPassword!==confirmPassword){
-      setChangeError("새 비밀번호 확인이 일치하지 않습니다.");
-      return;
-    }
-    persistPassword(nextPassword);
-    setCurrentPassword("");
-    setNextPassword("");
-    setConfirmPassword("");
-    setShowChange(false);
-    setChangeMessage("비밀번호가 변경되었습니다.");
-  };
-
   const loadCloudSnapshot=async(userId)=>{
     if(!client||!userId)return;
     setCloudStatus("syncing");
@@ -699,18 +640,32 @@ function AccessShell(){
       setCloudMessage(error.message);
       return;
     }
+    const accountScope=`user:${userId}`;
+    const accountLocalSnapshot=readLocalSnapshot(accountScope);
     if(data){
       const snapshot={planner:data.planner||{},records:Array.isArray(data.records)?data.records:[]};
-      writeLocalSnapshot(snapshot);
+      writeLocalSnapshot(accountScope,snapshot);
       lastSnapshotRef.current=JSON.stringify(snapshot);
       setCloudMessage(data.updated_at?`마지막 클라우드 저장 ${new Date(data.updated_at).toLocaleString("ko-KR")}`:"클라우드 데이터 로드 완료");
       setCloudStatus("synced");
+      setShowImportChoice(false);
+    }else if(hasSnapshotContent(accountLocalSnapshot)){
+      await saveCloudSnapshot(accountLocalSnapshot,userId,true);
+      setCloudStatus("synced");
+      setCloudMessage("이 브라우저에 저장된 같은 계정 데이터를 클라우드에 연결했습니다.");
+      setShowImportChoice(false);
     }else{
-      const localSnapshot=readLocalSnapshot();
-      if(hasSnapshotContent(localSnapshot))await saveCloudSnapshot(localSnapshot,userId,true);
-      else{
+      const legacySnapshot=readLegacySnapshot();
+      clearLocalSnapshot(accountScope);
+      lastSnapshotRef.current="";
+      if(hasSnapshotContent(legacySnapshot)){
         setCloudStatus("synced");
-        setCloudMessage("새 클라우드 계정입니다. 첫 입력부터 자동 저장됩니다.");
+        setCloudMessage("새 계정입니다. 기존 이 브라우저 데이터는 가져올지 선택해주세요.");
+        setShowImportChoice(true);
+      }else{
+        setCloudStatus("synced");
+        setCloudMessage("새 계정입니다. 빈 상태에서 시작합니다.");
+        setShowImportChoice(false);
       }
     }
     setAppVersion(v=>v+1);
@@ -772,31 +727,29 @@ function AccessShell(){
     setAuthMessage(authMode==="signup"?"회원가입 및 로그인 완료":"로그인 완료");
   };
 
+  const handleGoogleLogin=async()=>{
+    if(!client)return;
+    setAuthBusy(true);
+    setAuthError("");
+    const redirectTo=`${window.location.origin}${window.location.pathname}`;
+    const {error}=await client.auth.signInWithOAuth({
+      provider:"google",
+      options:{redirectTo}
+    });
+    if(error){
+      setAuthBusy(false);
+      setAuthError(error.message);
+    }
+  };
+
   const handleCloudLogout=async()=>{
     if(!client)return;
     await client.auth.signOut();
     setSession(null);
+    setShowImportChoice(false);
     setCloudStatus("연결 대기");
     setCloudMessage("로그인 필요");
   };
-
-  if(!unlocked){
-    return(
-    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"24px",background:"radial-gradient(circle at top,#1b2236 0%,#0f1117 58%)"}}>
-      <div className="card" style={{width:"100%",maxWidth:420,padding:"28px 24px",boxShadow:"0 20px 60px rgba(0,0,0,0.35)"}}>
-        <div style={{fontSize:12,fontWeight:700,color:C.accent,letterSpacing:"0.08em",marginBottom:10}}>PRIVATE ACCESS</div>
-        <h1 style={{fontSize:28,fontWeight:800,color:C.text,marginBottom:10,lineHeight:1.25}}>연봉 및 재정 관리 페이지</h1>
-        <p style={{fontSize:13,color:C.muted,lineHeight:1.6,marginBottom:18}}>링크 접속 후 비밀번호를 입력해야 내용이 보이도록 잠금 화면을 유지합니다.</p>
-        <form onSubmit={handleUnlock}>
-          <div style={{fontSize:12,color:C.muted,marginBottom:6}}>비밀번호</div>
-          <input type="password" className="ti" value={passwordInput} onChange={e=>setPasswordInput(e.target.value)} placeholder="비밀번호 입력" autoComplete="current-password" style={{marginBottom:12}}/>
-          {loginError&&<div style={{marginBottom:12,padding:"10px 12px",borderRadius:10,background:"rgba(248,113,113,0.12)",border:"1px solid rgba(248,113,113,0.25)",fontSize:12,color:C.red}}>{loginError}</div>}
-          <button className="btn-primary" type="submit">접속하기</button>
-        </form>
-        <div style={{marginTop:14,fontSize:11.5,color:C.dim,lineHeight:1.6}}>비밀번호는 로그인 후 변경할 수 있습니다.</div>
-      </div>
-    </div>);
-  }
 
   const setupCard=(
     <div className="card" style={{maxWidth:760,margin:"28px auto 18px",padding:"22px 20px",border:`1px solid ${C.orange}44`}}>
@@ -827,35 +780,28 @@ for update using (auth.uid() = user_id);`}
     </div>
   );
 
+  const importLegacyToAccount=async()=>{
+    if(!session?.user?.id)return;
+    setImportBusy(true);
+    const snapshot=readLegacySnapshot();
+    writeLocalSnapshot(`user:${session.user.id}`,snapshot);
+    await saveCloudSnapshot(snapshot,session.user.id,true);
+    setShowImportChoice(false);
+    setImportBusy(false);
+    setCloudMessage("기존 이 브라우저 데이터를 현재 계정으로 가져왔습니다.");
+    setAppVersion(v=>v+1);
+  };
+
+  const startFreshAccount=()=>{
+    if(!session?.user?.id)return;
+    clearLocalSnapshot(`user:${session.user.id}`);
+    setShowImportChoice(false);
+    setCloudMessage("새 계정은 빈 데이터로 시작합니다.");
+    setAppVersion(v=>v+1);
+  };
+
   return(<>
-    {showChange&&<div style={{position:"fixed",inset:0,zIndex:20,background:"rgba(15,17,23,0.74)",display:"flex",alignItems:"center",justifyContent:"center",padding:"20px"}}>
-      <div className="card" style={{width:"100%",maxWidth:420,padding:"24px 22px",boxShadow:"0 20px 60px rgba(0,0,0,0.35)"}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-          <div>
-            <div style={{fontSize:18,fontWeight:700,color:C.text,marginBottom:4}}>비밀번호 변경</div>
-            <div style={{fontSize:12,color:C.muted}}>현재 비밀번호를 확인한 뒤 새 비밀번호로 바꿉니다.</div>
-          </div>
-          <button onClick={()=>{setShowChange(false);setChangeError("");}} style={{background:"none",border:"none",color:C.dim,fontSize:20,cursor:"pointer",lineHeight:1}}>×</button>
-        </div>
-        <form onSubmit={handleChangePassword}>
-          <div style={{fontSize:12,color:C.muted,marginBottom:6}}>현재 비밀번호</div>
-          <input type="password" className="ti" value={currentPassword} onChange={e=>setCurrentPassword(e.target.value)} autoComplete="current-password" style={{marginBottom:12}}/>
-          <div style={{fontSize:12,color:C.muted,marginBottom:6}}>새 비밀번호</div>
-          <input type="password" className="ti" value={nextPassword} onChange={e=>setNextPassword(e.target.value)} autoComplete="new-password" style={{marginBottom:12}}/>
-          <div style={{fontSize:12,color:C.muted,marginBottom:6}}>새 비밀번호 확인</div>
-          <input type="password" className="ti" value={confirmPassword} onChange={e=>setConfirmPassword(e.target.value)} autoComplete="new-password" style={{marginBottom:12}}/>
-          {changeError&&<div style={{marginBottom:12,padding:"10px 12px",borderRadius:10,background:"rgba(248,113,113,0.12)",border:"1px solid rgba(248,113,113,0.25)",fontSize:12,color:C.red}}>{changeError}</div>}
-          <div style={{display:"flex",gap:8}}>
-            <button className="btn-primary" type="submit">변경 저장</button>
-            <button type="button" onClick={()=>{setShowChange(false);setChangeError("");}} style={{padding:"10px 18px",background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,color:C.muted,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>닫기</button>
-          </div>
-        </form>
-      </div>
-    </div>}
-
     {!client&&setupCard}
-
-    {!client&&<App key={`local-${appVersion}`} onLock={lockApp} onPasswordChanged={()=>{setShowChange(true);setChangeMessage("");setChangeError("");}} cloudStatus={cloudStatus} cloudMessage={cloudMessage}/>}
 
     {client&&!authReady&&<div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"24px"}}>
       <div className="card" style={{width:"100%",maxWidth:420,padding:"28px 24px",textAlign:"center"}}>클라우드 세션을 확인하는 중입니다...</div>
@@ -864,11 +810,19 @@ for update using (auth.uid() = user_id);`}
     {client&&authReady&&!session&&<div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:"24px",background:"radial-gradient(circle at top,#1b2236 0%,#0f1117 58%)"}}>
       <div className="card" style={{width:"100%",maxWidth:430,padding:"28px 24px",boxShadow:"0 20px 60px rgba(0,0,0,0.35)"}}>
         <div style={{fontSize:12,fontWeight:700,color:C.teal,letterSpacing:"0.08em",marginBottom:10}}>CLOUD SYNC</div>
-        <div style={{fontSize:26,fontWeight:800,color:C.text,marginBottom:10,lineHeight:1.25}}>여러 기기 자동 동기화</div>
-        <p style={{fontSize:13,color:C.muted,lineHeight:1.6,marginBottom:18}}>같은 Supabase 계정으로 로그인하면 저장된 연봉/재정 데이터가 자동으로 불러와집니다.</p>
+        <div style={{fontSize:26,fontWeight:800,color:C.text,marginBottom:10,lineHeight:1.25}}>계정 로그인으로 바로 시작</div>
+        <p style={{fontSize:13,color:C.muted,lineHeight:1.6,marginBottom:18}}>같은 Supabase 계정으로 로그인하면 여러 기기에서 데이터가 자동으로 동기화됩니다. 계정마다 데이터는 완전히 분리됩니다.</p>
         <div style={{display:"flex",gap:8,marginBottom:14}}>
           <button className="btn-sm" onClick={()=>setAuthMode("signin")} style={{flex:1,padding:"10px 12px",background:authMode==="signin"?C.teal+"18":"transparent",borderColor:authMode==="signin"?C.teal+"44":C.border,color:authMode==="signin"?C.teal:C.muted}}>로그인</button>
           <button className="btn-sm" onClick={()=>setAuthMode("signup")} style={{flex:1,padding:"10px 12px",background:authMode==="signup"?C.accent+"18":"transparent",borderColor:authMode==="signup"?C.accent+"44":C.border,color:authMode==="signup"?C.accent:C.muted}}>회원가입</button>
+        </div>
+        <button className="btn-primary" type="button" onClick={handleGoogleLogin} style={{marginBottom:12,background:"linear-gradient(135deg,#ffffff,#dbe4ff)",color:"#111827"}}>
+          {authBusy?"Google로 이동 중...":"Google로 계속하기"}
+        </button>
+        <div style={{display:"flex",alignItems:"center",gap:10,margin:"2px 0 14px"}}>
+          <div style={{height:1,background:C.border,flex:1}}/>
+          <span style={{fontSize:11,color:C.dim}}>또는 이메일로</span>
+          <div style={{height:1,background:C.border,flex:1}}/>
         </div>
         <form onSubmit={handleCloudAuth}>
           <div style={{fontSize:12,color:C.muted,marginBottom:6}}>이메일</div>
@@ -882,10 +836,22 @@ for update using (auth.uid() = user_id);`}
       </div>
     </div>}
 
-    {client&&authReady&&session&&<App
+    {showImportChoice&&session&&<div style={{position:"fixed",inset:0,zIndex:20,background:"rgba(15,17,23,0.78)",display:"flex",alignItems:"center",justifyContent:"center",padding:"20px"}}>
+      <div className="card" style={{width:"100%",maxWidth:460,padding:"24px 22px",boxShadow:"0 20px 60px rgba(0,0,0,0.35)"}}>
+        <div style={{fontSize:20,fontWeight:700,color:C.text,marginBottom:8}}>기존 이 브라우저 데이터가 있습니다</div>
+        <div style={{fontSize:13,color:C.muted,lineHeight:1.7,marginBottom:18}}>
+          이 계정은 새로 만든 계정이므로 기본값은 빈 데이터입니다. 원하면 이 브라우저에 남아 있는 기존 로컬 데이터를 현재 계정으로 가져올 수 있습니다.
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <button className="btn-primary" onClick={importLegacyToAccount} disabled={importBusy}>{importBusy?"가져오는 중...":"기존 데이터 가져오기"}</button>
+          <button type="button" onClick={startFreshAccount} style={{padding:"10px 18px",background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,color:C.muted,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>빈 상태로 시작</button>
+        </div>
+      </div>
+    </div>}
+
+    {client&&authReady&&session&&!showImportChoice&&<App
       key={`cloud-${appVersion}-${session.user.id}`}
-      onLock={lockApp}
-      onPasswordChanged={()=>{setShowChange(true);setChangeMessage("");setChangeError("");}}
+      storageScope={activeScope}
       onCloudSnapshotChange={saveCloudSnapshot}
       onCloudRefresh={()=>loadCloudSnapshot(session.user.id)}
       onCloudLogout={handleCloudLogout}
@@ -893,8 +859,6 @@ for update using (auth.uid() = user_id);`}
       cloudEmail={session.user.email}
       cloudMessage={cloudMessage}
     />}
-
-    {changeMessage&&<div style={{position:"fixed",right:20,bottom:20,zIndex:25,padding:"12px 14px",borderRadius:12,background:"rgba(74,222,128,0.14)",border:"1px solid rgba(74,222,128,0.3)",color:C.green,fontSize:12,fontWeight:600,boxShadow:"0 10px 24px rgba(0,0,0,0.24)"}}>{changeMessage}</div>}
   </>);
 }
 
